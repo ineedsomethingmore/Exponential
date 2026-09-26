@@ -34,6 +34,8 @@ interface Props {
   /** Set when a notification was clicked: drill straight into the active thread, then consume. */
   jumpToThread?: boolean;
   onJumped?: () => void;
+  /** Phone shell: registers a back handler (thread/inbox → list) for the iOS back-swipe guard. */
+  backRef?: React.MutableRefObject<(() => boolean) | null>;
 }
 
 const fmtTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -76,6 +78,7 @@ export function ChatPage(p: Props) {
   useEffect(() => {
     if (p.jumpToThread && active) { setScreen('thread'); p.onJumped?.(); }
   }, [p.jumpToThread, active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (p.backRef) p.backRef.current = () => { if (screen !== 'list') { setScreen('list'); return true; } return false; };
   const [previews, setPreviews] = useState<Record<string, { body: string; author?: string; at: string }>>(() => cachedPreviews(teamId) ?? {});
   useEffect(() => {
     setPreviews(cachedPreviews(teamId) ?? {}); // instant from cache, then reconcile

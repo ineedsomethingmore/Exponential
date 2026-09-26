@@ -190,6 +190,25 @@ export default function App() {
     mq.addEventListener('change', on);
     return () => mq.removeEventListener('change', on);
   }, []);
+  const mobileShell = !window.exponential && isMobile;
+  const [mTab, setMTab] = useState<'chat' | 'plan' | 'week'>('chat');
+  const chatBackRef = useRef<(() => boolean) | null>(null);
+  const selRef = useRef<Selection | null>(null);
+  selRef.current = selection;
+  // iOS back-swipe must navigate INSIDE the app — the browser history behind it holds the
+  // Google OAuth pages. A sentinel entry absorbs every back gesture and maps it to app
+  // navigation: close the open item, else leave the thread, else stay put.
+  useEffect(() => {
+    if (!mobileShell) return;
+    history.pushState({ exp: 1 }, '');
+    const onPop = () => {
+      history.pushState({ exp: 1 }, '');
+      if (selRef.current) { setSelection(null); return; }
+      chatBackRef.current?.();
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [mobileShell]);
   // Web Push (iPhone): 'ok-off' shows the enable pill, 'install' explains Add-to-Home-Screen.
   const [pushState, setPushState] = useState<'unknown' | 'ok-off' | 'on' | 'install' | 'none'>('unknown');
   useEffect(() => {
@@ -733,30 +752,263 @@ export default function App() {
 
   const calKey = `${person === data.me ? 'primary' : data.people.find((x) => x.id === person)?.email}|${week}`;
 
-  // Phone-sized web app: Messages IS the app (the planners need a desk). Same state,
-  // different shell — realtime, mentions, reactions and files all behave identically.
-  if (!window.exponential && isMobile) {
+  // The planner elements are SHARED between the desktop shell and the phone shell:
+  // same props, same handlers — only the frame around them differs.
+  const bigPlanEl = (
+            <BigPlan
+              projects={live.projects}
+              groups={data.groups ?? []}
+              deadlines={data.deadlines}
+              people={data.people}
+              locked={!unlocked || mobileShell}
+              onAddGroup={() => { setEditGroup(null); setSheet('group'); }}
+              today={today}
+              week={week}
+              selectedId={selection?.id}
+              selectedIds={multi}
+              onToggleSelect={toggleSelect}
+              editingId={editingId ?? undefined}
+              onWeekChange={setWeek}
+              onOpenProject={(p) => open('project', p.id)}
+              onOpenDeadline={(d) => open('deadline', d.id)}
+              onMoveProject={(id, patch) => updateProject(id, patch)}
+              onOpenRetro={(monday) => setSelection({ kind: 'retro', id: monday })}
+              onOpenGroup={(g) => { setEditGroup(g); setSheet('group'); }}
+              onReorderGroups={(ids) => update((d) => ({ ...d, groups: (d.groups ?? []).map((g) => ({ ...g, sort: ids.indexOf(g.id) })) }))}
+              onDuplicateProject={(id) => update((d) => {
+                const p = d.projects.find((x) => x.id === id);
+                if (!p) return d;
+                // the copy lands on a fresh lane in the same group, right below the original
+                const lane = d.projects.filter((x) => !x.deletedAt && (x.groupId ?? null) === (p.groupId ?? null)).reduce((m, x) => Math.max(m, x.lane + 1), 0);
+                return { ...d, projects: [...d.projects, { ...p, id: uid(), lane }] };
+              })}
+              onCollapseGroup={(ids) => setMulti((m) => (ids.some((id) => m.has(id)) ? new Set([...m].filter((id) => !ids.includes(id))) : m))}
+              onMoveDeadline={(id, date) => update((d) => ({ ...d, deadlines: d.deadlines.map((x) => (x.id === id ? { ...x, date } : x)) }))}
+              onCreateDeadline={(date) => {
+                const id = uid();
+                update((d) => ({ ...d, deadlines: [...d.deadlines, { id, name: 'New deadline', date }] }));
+                editingNew.current = true;
+                setEditingId(id);
+              }}
+              onRenameDeadline={(id, name) => {
+                setEditingId(null);
+                if (!name) update((d) => ({ ...d, deadlines: d.deadlines.filter((x) => x.id !== id) }));
+                else update((d) => ({ ...d, deadlines: d.deadlines.map((x) => (x.id === id ? { ...x, name } : x)) }));
+              }}
+              onCreateProject={(start, lane, groupId, atTop) => {
+                const id = uid();
+                update((d) => {
+                  // From a group's label row the new bar goes on TOP of the group: everyone below moves down a lane.
+                  const projects = atTop
+                    ? d.projects.map((p) => (!p.deletedAt && (p.groupId ?? null) === (groupId ?? null) ? { ...p, lane: p.lane + 1 } : p))
+                    : d.projects;
+                  return { ...d, projects: [...projects, { id, name: 'New project', start, end: addDays(start, 6), lane, groupId }] };
+                });
+                editingNew.current = true;
+                setEditingId(id);
+              }}
+              onStartRename={(id) => { editingNew.current = false; setEditingId(id); }}
+              onRename={(id, name) => {
+                setEditingId(null);
+                // An empty name removes a freshly created project but keeps the old name on a rename.
+                if (!name) { if (editingNew.current) update((d) => ({ ...d, projects: d.projects.filter((p) => p.id !== id) })); return; }
+                update((d) => ({ ...d, projects: d.projects.map((p) => (p.id === id ? { ...p, name } : p)) }));
+              }}
+              onMoveMany={(ids, dd) => update((d) => ({ ...d, projects: d.projects.map((p) => (ids.includes(p.id) ? { ...p, start: addDays(p.start, dd), end: addDays(p.end, dd) } : p)) }))}
+              onDeleteMany={deleteMany}
+              onDeleteProject={(id) => {
+                update((d) => softDelete(d, [id]));
+                if (selection?.id === id) setSelection(null);
+                setMulti((m) => { if (!m.has(id)) return m; const n = new Set(m); n.delete(id); return n; });
+              }}
+            />
+  );
+  const weekPlanEl = (
+            <WeekPlan
+              people={data.people}
+              me={data.me}
+              selected={person}
+              onSelect={setSelectedPerson}
+              week={week}
+              today={today}
+              tasks={[...live.tasks, ...(foreign?.tasks.filter((t) => t.personId === person) ?? [])]
+                .filter((t) => (t.personId === person || (t.reviewerId === person && (t.status === 'review' || t.reviewDone))) && (!t.date || (t.date <= addDays(week, 6) && (t.end ?? t.date) >= week)))}
+              teamBadge={foreign && data ? (id) => foreign.badge.get(id) ?? { id: data.id, name: data.name, icon: data.icon ?? undefined } : undefined}
+              allTeams={cloudMode && teams.length > 1 ? { on: allTeamsOn, toggle: () => setAllTeamsOn((v) => !v) } : undefined}
+              selectedId={selection?.id}
+              selectedIds={multi}
+              onToggleSelect={toggleSelect}
+              editingId={editingId ?? undefined}
+              onWeekChange={setWeek}
+              onAdd={(date) => {
+                if (isPending(person)) return; // they need to sign in once before they can own tasks
+                let id = '';
+                update((d) => { const r = addTask(d, person, date); id = r.id; return r.data; });
+                editingNew.current = true;
+                setEditingId(id);
+              }}
+              onEdit={(id) => { editingNew.current = false; setEditingId(id); }}
+              onRename={(id, title, viaEnter) => {
+                setEditingId(null);
+                if (!title && !editingNew.current) return; // clearing the name of an existing task keeps the old one
+                if (foreignOp(id, (d) => renameTask(d, id, title, editingNew.current))) return;
+                let nextId = '';
+                update((d) => {
+                  const t = d.tasks.find((x) => x.id === id);
+                  const renamed = renameTask(d, id, title, editingNew.current);
+                  // Enter keeps the flow going after a NEW task: a fresh one right after, ready to type.
+                  if (viaEnter && title && t && editingNew.current) { const r = addTask(renamed, t.personId, t.date); nextId = r.id; return r.data; }
+                  return renamed;
+                });
+                if (nextId) setEditingId(nextId);
+              }}
+              onAddNamed={(title) => { if (isPending(person)) return; update((d) => { const r = addTask(d, person, undefined); return renameTask(r.data, r.id, title); }); }}
+              onUpdate={(id, patch) => { if (!foreignOp(id, (d) => patchTask(d, id, patch))) updateTask(id, patch); }}
+              onDelete={(id) => {
+                if (!foreignOp(id, (d) => softDelete(d, [id]))) update((d) => softDelete(d, [id]));
+                if (selection?.id === id) setSelection(null);
+              }}
+              onDuplicate={(id) => {
+                const dup = (d: Data): Data => {
+                  const t = d.tasks.find((x) => x.id === id);
+                  if (!t) return d;
+                  // land right below the original; reorderTask renumbers the whole group with INTEGERS (sort_order column)
+                  const copy = { ...t, id: uid(), reviewerId: undefined, reviewDone: undefined };
+                  return reorderTask({ ...d, tasks: [...d.tasks, copy] }, copy.id, t.id);
+                };
+                if (!foreignOp(id, dup)) update(dup);
+              }}
+              onDeleteMany={deleteMany}
+              onDeny={(id) => { if (!foreignOp(id, (d) => denyReview(d, id))) update((d) => denyReview(d, id)); }}
+              onCompleteReview={(id) => { if (!foreignOp(id, (d) => completeReview(d, id))) update((d) => completeReview(d, id)); }}
+              onOpen={(t) => {
+                // A row from another team opens in that team: switch first, then select.
+                const tid = foreign?.teamOf.get(t.id);
+                if (tid) switchTeam(tid).then(() => open('task', t.id));
+                else open('task', t.id);
+              }}
+              onReorder={(id, afterId) => { if (!foreignOp(id, (d) => reorderTask(d, id, afterId))) update((d) => reorderTask(d, id, afterId)); }}
+              calendar={{
+                enabled: calendarOn,
+                available: !!googleUser,
+                events: calEvents[calKey] ?? [],
+                note: !window.exponential ? 'Available in the desktop app' : !googleUser ? 'Sign in with Google to see events' : calNote,
+                onReauth: calReauth ? reauthCalendar : undefined,
+              }}
+              onToggleCalendar={async () => {
+                if (calendarOn) { setCalendarOn(false); return; }
+                // First use: Google may not have granted calendar access with the sign-in; ask for it now.
+                const g = window.exponential?.google;
+                if (g && !(await g.hasCalendar())) {
+                  setCalNote('Waiting for Google in your browser…');
+                  const ok = await g.grantCalendar().catch(() => false);
+                  if (!ok) { setCalNote('Calendar access was not granted'); return; }
+                  setCalEvents({});
+                }
+                setCalendarOn(true);
+              }}
+            />
+  );
+  const detailEl = (w: number) => (selection ? (
+          <DetailPanel
+            width={w}
+            selection={selection}
+            project={selProject}
+            task={selTask}
+            deadline={selDeadline}
+            retro={selection.kind === 'retro' ? data.retros?.[selection.id] : undefined}
+            prevRetro={selection.kind === 'retro' ? data.retros?.[addDays(selection.id, -7)] : undefined}
+            carriedConfidence={selection.kind === 'retro' ? (() => {
+              // OKR scores roll forward: a new week starts where the last one left off
+              const m: Record<string, number> = {};
+              for (const w of Object.keys(data.retros ?? {}).sort()) {
+                if (w >= selection.id) break;
+                Object.assign(m, data.retros![w].answers.confidence ?? {});
+              }
+              return m;
+            })() : undefined}
+            retroTemplate={data.retroTemplate}
+            notifications={data.notifications ?? []}
+            people={data.people}
+            me={data.me}
+            onClose={() => setSelection(null)}
+            onOpen={setSelection}
+            tasks={live.tasks}
+            onCreateLinked={(link, title, coalesce) => {
+              let id = '';
+              update((d) => { const r = addTask(d, undefined, undefined, 'end', link); id = r.id; return { ...r.data, tasks: r.data.tasks.map((t) => (t.id === r.id ? { ...t, title } : t)) }; }, coalesce);
+              return id;
+            }}
+            onDeleteTask={(id, coalesce) => update((d) => softDelete(d, [id]), coalesce)}
+            onClaimTask={(id, personId) => update((d) => claimTask(d, id, personId))}
+            onUnclaimTask={(id) => update((d) => unclaimTask(d, id))}
+            onMarkRead={(ids) => update((d) => ({ ...d, notifications: (d.notifications ?? []).map((n) => (ids.includes(n.id) ? { ...n, read: true } : n)) }), 'mark-read')}
+            onUpdateProject={updateProject}
+            groups={data.groups ?? []}
+            onNewGroup={() => { setEditGroup(null); setSheet('group'); }}
+            onToggleAssignee={(pid, who) => {
+              const cur = data.projects.find((x) => x.id === pid)?.assignees ?? [];
+              updateProject(pid, { assignees: cur.includes(who) ? cur.filter((i) => i !== who) : [...cur, who] });
+            }}
+            onUpdateTask={updateTask}
+            onUpdateDeadline={(id, patch, key) => update((d) => {
+              const before = d.deadlines.find((x) => x.id === id);
+              if (!before || Object.entries(patch).every(([k, v]) => Object.is(before[k as keyof Deadline], v))) return d; // no-op: no phantom undo step
+              return { ...d, deadlines: d.deadlines.map((x) => (x.id === id ? { ...x, ...patch } : x)) };
+            }, key)}
+            onUpdateRetro={(wk, patch, key) => update((d) => {
+              const cur: Retro = d.retros?.[wk] ?? { week: wk, answers: {} };
+              return { ...d, retros: { ...d.retros, [wk]: { ...cur, ...patch, answers: { ...cur.answers, ...(patch.answers ?? {}) } } } };
+            }, key)}
+            retroFields={data.retroFields ?? DEFAULT_RETRO_FIELDS}
+            onDelete={() => {
+              const { kind, id } = selection;
+              update((d) =>
+                kind === 'project' || kind === 'task' ? softDelete(d, [id])
+                : kind === 'deadline' ? { ...d, deadlines: d.deadlines.filter((x) => x.id !== id) }
+                : d,
+              );
+              setSelection(null);
+            }}
+          />
+  ) : null);
+
+  if (mobileShell) {
     return (
       <div className="mobile-shell">
-        <ChatPage
-          teamId={data.id}
-          me={data.me}
-          people={data.people}
-          canModerate={data.moderators.includes(data.me)}
-          cloud={cloudMode}
-          channels={chat}
-          activeId={chatActive}
-          onActive={setChatActive}
-          onRefreshChannels={refreshChat}
-          notifications={data.notifications ?? []}
-          notifUnread={unread}
-          onOpenItem={() => {}}
-          onMarkRead={(ids) => update((d) => ({ ...d, notifications: (d.notifications ?? []).map((n) => (ids.includes(n.id) ? { ...n, read: true } : n)) }), 'mark-read')}
-          onClose={() => {}}
-          onError={(m) => { setSaveError(m); window.setTimeout(() => setSaveError(null), 6000); }}
-          jumpToThread={chatJump}
-          onJumped={() => setChatJump(false)}
-        />
+        {mTab === 'chat' && (
+          <ChatPage
+            teamId={data.id}
+            me={data.me}
+            people={data.people}
+            canModerate={data.moderators.includes(data.me)}
+            cloud={cloudMode}
+            channels={chat}
+            activeId={chatActive}
+            onActive={setChatActive}
+            onRefreshChannels={refreshChat}
+            notifications={data.notifications ?? []}
+            notifUnread={unread}
+            onOpenItem={(sel) => setSelection(sel)}
+            onMarkRead={(ids) => update((d) => ({ ...d, notifications: (d.notifications ?? []).map((n) => (ids.includes(n.id) ? { ...n, read: true } : n)) }), 'mark-read')}
+            onClose={() => {}}
+            onError={(m) => { setSaveError(m); window.setTimeout(() => setSaveError(null), 6000); }}
+            jumpToThread={chatJump}
+            onJumped={() => setChatJump(false)}
+            backRef={chatBackRef}
+          />
+        )}
+        {mTab === 'plan' && <section className="panel mobile-pane">{bigPlanEl}</section>}
+        {mTab === 'week' && <section className="panel mobile-pane">{weekPlanEl}</section>}
+        {selection && <div className="mobile-detail">{detailEl(window.innerWidth)}</div>}
+        <nav className="mobile-tabs">
+          <button className={mTab === 'chat' ? 'on' : ''} onClick={() => { setSelection(null); setMTab('chat'); }}>
+            <span className="nav-ico"><ChatIcon />{(chatUnread > 0 || unread > 0) && <span className="nav-dot" />}</span>
+            Messages
+          </button>
+          <button className={mTab === 'plan' ? 'on' : ''} onClick={() => { setSelection(null); setMTab('plan'); }}><PlanIcon /> Plan</button>
+          <button className={mTab === 'week' ? 'on' : ''} onClick={() => { setSelection(null); setMTab('week'); }}><WeekIcon /> Week</button>
+        </nav>
         {pushState === 'ok-off' && (
           <button className="pill push-banner" onClick={async () => setPushState((await enablePush()) === 'on' ? 'on' : 'ok-off')}>
             Enable notifications
@@ -917,162 +1169,13 @@ export default function App() {
                 <LockIcon open={unlocked} /> {unlocked ? 'Unlocked' : 'Unlock'}
               </button>
             </div>
-            <BigPlan
-              projects={live.projects}
-              groups={data.groups ?? []}
-              deadlines={data.deadlines}
-              people={data.people}
-              locked={!unlocked}
-              onAddGroup={() => { setEditGroup(null); setSheet('group'); }}
-              today={today}
-              week={week}
-              selectedId={selection?.id}
-              selectedIds={multi}
-              onToggleSelect={toggleSelect}
-              editingId={editingId ?? undefined}
-              onWeekChange={setWeek}
-              onOpenProject={(p) => open('project', p.id)}
-              onOpenDeadline={(d) => open('deadline', d.id)}
-              onMoveProject={(id, patch) => updateProject(id, patch)}
-              onOpenRetro={(monday) => setSelection({ kind: 'retro', id: monday })}
-              onOpenGroup={(g) => { setEditGroup(g); setSheet('group'); }}
-              onReorderGroups={(ids) => update((d) => ({ ...d, groups: (d.groups ?? []).map((g) => ({ ...g, sort: ids.indexOf(g.id) })) }))}
-              onDuplicateProject={(id) => update((d) => {
-                const p = d.projects.find((x) => x.id === id);
-                if (!p) return d;
-                // the copy lands on a fresh lane in the same group, right below the original
-                const lane = d.projects.filter((x) => !x.deletedAt && (x.groupId ?? null) === (p.groupId ?? null)).reduce((m, x) => Math.max(m, x.lane + 1), 0);
-                return { ...d, projects: [...d.projects, { ...p, id: uid(), lane }] };
-              })}
-              onCollapseGroup={(ids) => setMulti((m) => (ids.some((id) => m.has(id)) ? new Set([...m].filter((id) => !ids.includes(id))) : m))}
-              onMoveDeadline={(id, date) => update((d) => ({ ...d, deadlines: d.deadlines.map((x) => (x.id === id ? { ...x, date } : x)) }))}
-              onCreateDeadline={(date) => {
-                const id = uid();
-                update((d) => ({ ...d, deadlines: [...d.deadlines, { id, name: 'New deadline', date }] }));
-                editingNew.current = true;
-                setEditingId(id);
-              }}
-              onRenameDeadline={(id, name) => {
-                setEditingId(null);
-                if (!name) update((d) => ({ ...d, deadlines: d.deadlines.filter((x) => x.id !== id) }));
-                else update((d) => ({ ...d, deadlines: d.deadlines.map((x) => (x.id === id ? { ...x, name } : x)) }));
-              }}
-              onCreateProject={(start, lane, groupId, atTop) => {
-                const id = uid();
-                update((d) => {
-                  // From a group's label row the new bar goes on TOP of the group: everyone below moves down a lane.
-                  const projects = atTop
-                    ? d.projects.map((p) => (!p.deletedAt && (p.groupId ?? null) === (groupId ?? null) ? { ...p, lane: p.lane + 1 } : p))
-                    : d.projects;
-                  return { ...d, projects: [...projects, { id, name: 'New project', start, end: addDays(start, 6), lane, groupId }] };
-                });
-                editingNew.current = true;
-                setEditingId(id);
-              }}
-              onStartRename={(id) => { editingNew.current = false; setEditingId(id); }}
-              onRename={(id, name) => {
-                setEditingId(null);
-                // An empty name removes a freshly created project but keeps the old name on a rename.
-                if (!name) { if (editingNew.current) update((d) => ({ ...d, projects: d.projects.filter((p) => p.id !== id) })); return; }
-                update((d) => ({ ...d, projects: d.projects.map((p) => (p.id === id ? { ...p, name } : p)) }));
-              }}
-              onMoveMany={(ids, dd) => update((d) => ({ ...d, projects: d.projects.map((p) => (ids.includes(p.id) ? { ...p, start: addDays(p.start, dd), end: addDays(p.end, dd) } : p)) }))}
-              onDeleteMany={deleteMany}
-              onDeleteProject={(id) => {
-                update((d) => softDelete(d, [id]));
-                if (selection?.id === id) setSelection(null);
-                setMulti((m) => { if (!m.has(id)) return m; const n = new Set(m); n.delete(id); return n; });
-              }}
-            />
+            {bigPlanEl}
           </section>
 
           <div className={`resizer${resizing ? ' dragging' : ''}`} onPointerDown={onResizeDown} />
 
           <section className="panel" style={{ flex: 'none', height: weekH }}>
-            <WeekPlan
-              people={data.people}
-              me={data.me}
-              selected={person}
-              onSelect={setSelectedPerson}
-              week={week}
-              today={today}
-              tasks={[...live.tasks, ...(foreign?.tasks.filter((t) => t.personId === person) ?? [])]
-                .filter((t) => (t.personId === person || (t.reviewerId === person && (t.status === 'review' || t.reviewDone))) && (!t.date || (t.date <= addDays(week, 6) && (t.end ?? t.date) >= week)))}
-              teamBadge={foreign && data ? (id) => foreign.badge.get(id) ?? { id: data.id, name: data.name, icon: data.icon ?? undefined } : undefined}
-              allTeams={cloudMode && teams.length > 1 ? { on: allTeamsOn, toggle: () => setAllTeamsOn((v) => !v) } : undefined}
-              selectedId={selection?.id}
-              selectedIds={multi}
-              onToggleSelect={toggleSelect}
-              editingId={editingId ?? undefined}
-              onWeekChange={setWeek}
-              onAdd={(date) => {
-                if (isPending(person)) return; // they need to sign in once before they can own tasks
-                let id = '';
-                update((d) => { const r = addTask(d, person, date); id = r.id; return r.data; });
-                editingNew.current = true;
-                setEditingId(id);
-              }}
-              onEdit={(id) => { editingNew.current = false; setEditingId(id); }}
-              onRename={(id, title, viaEnter) => {
-                setEditingId(null);
-                if (!title && !editingNew.current) return; // clearing the name of an existing task keeps the old one
-                if (foreignOp(id, (d) => renameTask(d, id, title, editingNew.current))) return;
-                let nextId = '';
-                update((d) => {
-                  const t = d.tasks.find((x) => x.id === id);
-                  const renamed = renameTask(d, id, title, editingNew.current);
-                  // Enter keeps the flow going after a NEW task: a fresh one right after, ready to type.
-                  if (viaEnter && title && t && editingNew.current) { const r = addTask(renamed, t.personId, t.date); nextId = r.id; return r.data; }
-                  return renamed;
-                });
-                if (nextId) setEditingId(nextId);
-              }}
-              onAddNamed={(title) => { if (isPending(person)) return; update((d) => { const r = addTask(d, person, undefined); return renameTask(r.data, r.id, title); }); }}
-              onUpdate={(id, patch) => { if (!foreignOp(id, (d) => patchTask(d, id, patch))) updateTask(id, patch); }}
-              onDelete={(id) => {
-                if (!foreignOp(id, (d) => softDelete(d, [id]))) update((d) => softDelete(d, [id]));
-                if (selection?.id === id) setSelection(null);
-              }}
-              onDuplicate={(id) => {
-                const dup = (d: Data): Data => {
-                  const t = d.tasks.find((x) => x.id === id);
-                  if (!t) return d;
-                  // land right below the original; reorderTask renumbers the whole group with INTEGERS (sort_order column)
-                  const copy = { ...t, id: uid(), reviewerId: undefined, reviewDone: undefined };
-                  return reorderTask({ ...d, tasks: [...d.tasks, copy] }, copy.id, t.id);
-                };
-                if (!foreignOp(id, dup)) update(dup);
-              }}
-              onDeleteMany={deleteMany}
-              onDeny={(id) => { if (!foreignOp(id, (d) => denyReview(d, id))) update((d) => denyReview(d, id)); }}
-              onCompleteReview={(id) => { if (!foreignOp(id, (d) => completeReview(d, id))) update((d) => completeReview(d, id)); }}
-              onOpen={(t) => {
-                // A row from another team opens in that team: switch first, then select.
-                const tid = foreign?.teamOf.get(t.id);
-                if (tid) switchTeam(tid).then(() => open('task', t.id));
-                else open('task', t.id);
-              }}
-              onReorder={(id, afterId) => { if (!foreignOp(id, (d) => reorderTask(d, id, afterId))) update((d) => reorderTask(d, id, afterId)); }}
-              calendar={{
-                enabled: calendarOn,
-                available: !!googleUser,
-                events: calEvents[calKey] ?? [],
-                note: !window.exponential ? 'Available in the desktop app' : !googleUser ? 'Sign in with Google to see events' : calNote,
-                onReauth: calReauth ? reauthCalendar : undefined,
-              }}
-              onToggleCalendar={async () => {
-                if (calendarOn) { setCalendarOn(false); return; }
-                // First use: Google may not have granted calendar access with the sign-in; ask for it now.
-                const g = window.exponential?.google;
-                if (g && !(await g.hasCalendar())) {
-                  setCalNote('Waiting for Google in your browser…');
-                  const ok = await g.grantCalendar().catch(() => false);
-                  if (!ok) { setCalNote('Calendar access was not granted'); return; }
-                  setCalEvents({});
-                }
-                setCalendarOn(true);
-              }}
-            />
+            {weekPlanEl}
           </section>
         </div>
 
@@ -1083,69 +1186,7 @@ export default function App() {
           onTransitionEnd={(e) => { if (e.propertyName === 'width') setSlotAnimating(false); }}
         >
         {detailOpen && <div className={`vresizer${vResizing ? ' dragging' : ''}`} onPointerDown={onVResizeDown} />}
-        {detailOpen && selection && (
-          <DetailPanel
-            width={detailW}
-            selection={selection}
-            project={selProject}
-            task={selTask}
-            deadline={selDeadline}
-            retro={selection.kind === 'retro' ? data.retros?.[selection.id] : undefined}
-            prevRetro={selection.kind === 'retro' ? data.retros?.[addDays(selection.id, -7)] : undefined}
-            carriedConfidence={selection.kind === 'retro' ? (() => {
-              // OKR scores roll forward: a new week starts where the last one left off
-              const m: Record<string, number> = {};
-              for (const w of Object.keys(data.retros ?? {}).sort()) {
-                if (w >= selection.id) break;
-                Object.assign(m, data.retros![w].answers.confidence ?? {});
-              }
-              return m;
-            })() : undefined}
-            retroTemplate={data.retroTemplate}
-            notifications={data.notifications ?? []}
-            people={data.people}
-            me={data.me}
-            onClose={() => setSelection(null)}
-            onOpen={setSelection}
-            tasks={live.tasks}
-            onCreateLinked={(link, title, coalesce) => {
-              let id = '';
-              update((d) => { const r = addTask(d, undefined, undefined, 'end', link); id = r.id; return { ...r.data, tasks: r.data.tasks.map((t) => (t.id === r.id ? { ...t, title } : t)) }; }, coalesce);
-              return id;
-            }}
-            onDeleteTask={(id, coalesce) => update((d) => softDelete(d, [id]), coalesce)}
-            onClaimTask={(id, personId) => update((d) => claimTask(d, id, personId))}
-            onUnclaimTask={(id) => update((d) => unclaimTask(d, id))}
-            onMarkRead={(ids) => update((d) => ({ ...d, notifications: (d.notifications ?? []).map((n) => (ids.includes(n.id) ? { ...n, read: true } : n)) }), 'mark-read')}
-            onUpdateProject={updateProject}
-            groups={data.groups ?? []}
-            onNewGroup={() => { setEditGroup(null); setSheet('group'); }}
-            onToggleAssignee={(pid, who) => {
-              const cur = data.projects.find((x) => x.id === pid)?.assignees ?? [];
-              updateProject(pid, { assignees: cur.includes(who) ? cur.filter((i) => i !== who) : [...cur, who] });
-            }}
-            onUpdateTask={updateTask}
-            onUpdateDeadline={(id, patch, key) => update((d) => {
-              const before = d.deadlines.find((x) => x.id === id);
-              if (!before || Object.entries(patch).every(([k, v]) => Object.is(before[k as keyof Deadline], v))) return d; // no-op: no phantom undo step
-              return { ...d, deadlines: d.deadlines.map((x) => (x.id === id ? { ...x, ...patch } : x)) };
-            }, key)}
-            onUpdateRetro={(wk, patch, key) => update((d) => {
-              const cur: Retro = d.retros?.[wk] ?? { week: wk, answers: {} };
-              return { ...d, retros: { ...d.retros, [wk]: { ...cur, ...patch, answers: { ...cur.answers, ...(patch.answers ?? {}) } } } };
-            }, key)}
-            retroFields={data.retroFields ?? DEFAULT_RETRO_FIELDS}
-            onDelete={() => {
-              const { kind, id } = selection;
-              update((d) =>
-                kind === 'project' || kind === 'task' ? softDelete(d, [id])
-                : kind === 'deadline' ? { ...d, deadlines: d.deadlines.filter((x) => x.id !== id) }
-                : d,
-              );
-              setSelection(null);
-            }}
-          />
-        )}
+        {detailOpen && detailEl(detailW)}
         </div>
       </div>
 
@@ -1227,6 +1268,10 @@ function ChatIcon() {
       <path d="M6 4.5h12A2.5 2.5 0 0 1 20.5 7v6a2.5 2.5 0 0 1-2.5 2.5h-6.4L7.5 19v-3.5H6A2.5 2.5 0 0 1 3.5 13V7A2.5 2.5 0 0 1 6 4.5Z" />
     </svg>
   );
+}
+
+function WeekIcon() {
+  return <svg {...ICON}><rect x="3.5" y="5" width="17" height="15.5" rx="3.5" /><path d="M3.5 10.5h17M8.5 5.5V3m7 2.5V3" /></svg>;
 }
 
 function PlanIcon() {
