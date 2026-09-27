@@ -1346,13 +1346,13 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 /* ── phone-sized web app: tabbed shell (Messages / Plan / Week) ── */
 .mobile-shell {
   position: fixed; inset: 0; display: flex; flex-direction: column;
-  background: var(--panel); /* one flat surface: sticky title cells and pane contents blend seamlessly */
+  background: var(--bg); /* ONE flat ground-grey surface — sticky cells use the same token below */
   padding: env(safe-area-inset-top) 0 0;
 }
 .mobile-shell .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .mobile-shell .chat-main { flex: 1; min-height: 0; }
 .mobile-shell .side-head button[title="Close"] { display: none; } /* the chat head's × only — the detail overlay keeps its close */
-.mobile-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border-radius: 0; box-shadow: none; }
+.mobile-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border-radius: 0; box-shadow: none; background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
 /* plan on touch: the browser must never scroll/zoom the page — BigPlan's own pointer
    gestures (drag = pan, two fingers = pinch zoom) get every event */
 .mobile-pane .timeline { touch-action: none; }
@@ -1362,8 +1362,8 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 .mobile-pane .wk-swipe { min-width: 100%; width: max-content; }
 .mobile-pane .wk-rows { overflow: visible; padding-bottom: 24px; }
 .mobile-pane .wk-row { grid-template-columns: 148px 616px; }
-.mobile-pane .wk-list { position: sticky; left: 0; z-index: 3; background: var(--panel); }
-.mobile-pane .wk-header { position: sticky; top: 0; z-index: 4; background: var(--panel); }
+.mobile-pane .wk-list { position: sticky; left: 0; z-index: 3; background: var(--bg); }
+.mobile-pane .wk-header { position: sticky; top: 0; z-index: 4; background: var(--bg); }
 .mobile-pane .wk-header .wk-list { z-index: 5; }
 .mobile-tabs {
   flex: none; display: flex; gap: 4px;
