@@ -201,6 +201,40 @@ export default function App() {
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, [mobileShell]);
+
+  // Kill Safari's edge-swipe navigation OUTRIGHT: the gesture only starts when a touch
+  // BEGINS in the screen-edge bezel, and preventDefault on that touchstart stops it cold.
+  // preventDefault also swallows the tap's synthesized click, so a still tap in the strip
+  // re-triggers its control manually (buttons/links click, editables focus).
+  useEffect(() => {
+    if (!mobileShell) return;
+    const EDGE = 28;
+    let edge: { id: number; x: number; y: number; target: EventTarget | null } | null = null;
+    const onStart = (e: TouchEvent) => {
+      const t = e.touches[0];
+      if (e.touches.length === 1 && (t.pageX < EDGE || t.pageX > window.innerWidth - EDGE)) {
+        e.preventDefault();
+        edge = { id: t.identifier, x: t.pageX, y: t.pageY, target: e.target };
+      }
+    };
+    const onEnd = (e: TouchEvent) => {
+      if (!edge) return;
+      const t = [...e.changedTouches].find((x) => x.identifier === edge!.id);
+      const was = edge;
+      edge = null;
+      if (!t || Math.abs(t.pageX - was.x) > 8 || Math.abs(t.pageY - was.y) > 8) return;
+      const el = (was.target as HTMLElement | null)?.closest?.('input, textarea, [contenteditable="true"], button, a, [role="button"]') as HTMLElement | null;
+      if (!el) return;
+      if (el.matches('input, textarea, [contenteditable="true"]')) el.focus();
+      else el.click();
+    };
+    document.addEventListener('touchstart', onStart, { passive: false });
+    document.addEventListener('touchend', onEnd, { passive: true });
+    return () => {
+      document.removeEventListener('touchstart', onStart);
+      document.removeEventListener('touchend', onEnd);
+    };
+  }, [mobileShell]);
   // Web Push (iPhone): 'ok-off' shows the enable pill, 'install' explains Add-to-Home-Screen.
   const [pushState, setPushState] = useState<'unknown' | 'ok-off' | 'on' | 'install' | 'none'>('unknown');
   useEffect(() => {
