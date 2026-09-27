@@ -156,6 +156,11 @@ export function ChatPage(p: Props) {
   const regular = channels.filter((c) => !isDm(c));
   const dms = channels.filter(isDm);
   const teammates = people.filter((x) => !x.id.startsWith('pending:'));
+  // ONE recency-sorted list: channels and DMs mixed, newest conversation on top.
+  // Teammates you've never messaged wait below the fold as quiet starters.
+  const lastAt = (ch: Channel) => previews[ch.id]?.at ?? ch.lastAt ?? '';
+  const recents = [...regular, ...dms.filter((d) => lastAt(d))].sort((a, b) => lastAt(b).localeCompare(lastAt(a)));
+  const quietTeammates = teammates.filter((x) => { const ch = dms.find((d) => d.name === dmName(me, x.id)); return !ch || !lastAt(ch); });
 
   const openDmWith = async (personId: string) => {
     const ch = dms.find((d) => d.name === dmName(me, personId));
@@ -200,10 +205,19 @@ export function ChatPage(p: Props) {
             <button className="icon-btn" title="Close" onClick={p.onClose}><XGlyph /></button>
           </div>
           <div className="chat-convos">
-            {regular.map((ch) => convoRow(ch,
-              <span className="convo-hash">{ch.private ? <LockGlyph /> : '#'}</span>,
-              ch.name,
-              () => { onActive(ch.id); setScreen('thread'); }))}
+            {recents.map((ch) => {
+              if (isDm(ch)) {
+                const other = people.find((x) => x.id === dmOther(ch, me));
+                return convoRow(ch,
+                  other ? <Avatar person={other} size={34} /> : <span className="convo-hash">@</span>,
+                  <>{other ? shortName(other.name) : 'Direct message'}{other?.id === me ? ' (you)' : ''}</>,
+                  () => { onActive(ch.id); setScreen('thread'); });
+              }
+              return convoRow(ch,
+                <span className="convo-hash">{ch.private ? <LockGlyph /> : '#'}</span>,
+                ch.name,
+                () => { onActive(ch.id); setScreen('thread'); });
+            })}
             {newChannel ? (
               <NewChannelForm people={people} me={me} onClose={() => setNewChannel(false)}
                 onCreate={async (name, priv, members) => {
@@ -216,7 +230,7 @@ export function ChatPage(p: Props) {
                 <span className="convo-main"><span className="convo-name">New channel</span></span>
               </button>
             )}
-            {teammates.map((x) => {
+            {quietTeammates.map((x) => {
               const ch = dms.find((d) => d.name === dmName(me, x.id));
               const stub: Channel = ch ?? { id: `stub-${x.id}`, name: dmName(me, x.id), private: true, unread: 0 };
               return convoRow(stub,

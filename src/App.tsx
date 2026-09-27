@@ -396,7 +396,8 @@ export default function App() {
 
   const updateTask = (id: string, patch: Partial<Task>, coalesce?: string) => update((d) => patchTask(d, id, patch), coalesce);
 
-  /** Project edits notify everyone assigned (except the editor). */
+  /** Master-plan edits are QUIET — moving/renaming/retouching a project notifies nobody
+   *  (it used to ping every assignee). Being ADDED to a project still notifies you. */
   const updateProject = (id: string, patch: Partial<Project>, coalesce?: string) =>
     update((d) => {
       const before = d.projects.find((p) => p.id === id);
@@ -404,14 +405,9 @@ export default function App() {
       if (Object.entries(patch).every(([k, v]) => Object.is(before[k as keyof Project], v))) return d; // no-op: no phantom undo step
       const after = { ...before, ...patch };
       let next: Data = { ...d, projects: d.projects.map((p) => (p.id === id ? after : p)) };
-      const what = patch.name !== undefined && patch.name !== before.name ? 'renamed' : patch.start || patch.end ? 'moved' : patch.notes !== undefined ? 'updated the notes of' : patch.assignees ? null : 'changed';
       if (patch.assignees) {
         for (const pid of patch.assignees.filter((x) => !before.assignees?.includes(x))) {
           next = notify(next, { to: pid, from: d.me, kind: 'project-changed', text: `${nameOf(d, d.me)} added you to “${after.name}”`, ref: { kind: 'project', id } });
-        }
-      } else if (what && !coalesce) {
-        for (const pid of after.assignees ?? []) {
-          next = notify(next, { to: pid, from: d.me, kind: 'project-changed', text: `${nameOf(d, d.me)} ${what} “${after.name}”`, ref: { kind: 'project', id } });
         }
       }
       return next;
