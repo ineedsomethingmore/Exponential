@@ -1354,8 +1354,8 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 .shell.phone { padding: 10px; }
 .shell.phone .sidebar { display: none; }
 .shell.phone .main { margin-bottom: 62px; } /* room for the floating bar */
-/* planner panels go opaque so the week's sticky cells blend without seams */
-.shell.phone .main .panel { background: var(--panel); -webkit-backdrop-filter: none; backdrop-filter: none; }
+/* planner panels keep the desktop Finder-glass; the week's sticky cells are glass too
+   (frost + blur), so scrolling day columns blur away beneath them instead of clashing */
 /* both side slots become full-screen sliding windows */
 .shell.phone .detail-slot { position: fixed; inset: 10px 10px calc(env(safe-area-inset-bottom, 0px) + 60px); width: auto !important; z-index: 120; transition: none; } /* stops above the bottom menu, which stays tappable */
 .shell.phone .detail-slot.clip { display: none; }
@@ -1372,8 +1372,8 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 .shell.phone .wk-swipe { min-width: 100%; width: max-content; }
 .shell.phone .wk-rows { overflow: visible; padding-bottom: 24px; }
 .shell.phone .wk-row { grid-template-columns: 148px 616px; }
-.shell.phone .wk-list { position: sticky; left: 0; z-index: 3; background: var(--panel); }
-.shell.phone .wk-header { position: sticky; top: 0; z-index: 4; background: var(--panel); }
+.shell.phone .wk-list { position: sticky; left: 0; z-index: 3; background: var(--frost); -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px); }
+.shell.phone .wk-header { position: sticky; top: 0; z-index: 4; background: var(--frost); -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px); }
 .shell.phone .wk-header .wk-list { z-index: 5; }
 /* the bottom menu — part of the ground, like the desktop rail (no window chrome) */
 .float-tabs {
