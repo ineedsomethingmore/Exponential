@@ -1343,6 +1343,13 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 .mention.me { background: color-mix(in srgb, var(--accent) 26%, transparent); color: color-mix(in srgb, var(--accent) 78%, var(--text)); }
 .mention-pop { z-index: 320; min-width: 200px; max-height: 250px; overflow-y: auto; }
 
+/* a phone ROTATED to landscape exceeds the mobile breakpoint and gets the desktop shell —
+   render it two zoom steps smaller so the panels actually fit (touch devices only; the
+   zoomed viewport stays under 520px so the query can't flap) */
+@media (pointer: coarse) and (max-height: 520px) {
+  html { zoom: 0.8; }
+}
+
 /* ── phone-sized web app: tabbed shell (Messages / Plan / Week) ── */
 .mobile-shell {
   position: fixed; inset: 0; display: flex; flex-direction: column;
