@@ -22,8 +22,14 @@ self.addEventListener('push', (e) => {
 
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
+  const chan = e.notification.data && e.notification.data.channelId;
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((cs) => {
-    for (const c of cs) if ('focus' in c) return c.focus();
-    return self.clients.openWindow('./');
+    for (const c of cs) {
+      if ('focus' in c) {
+        if (chan) c.postMessage({ type: 'open-chat', channelId: chan });
+        return c.focus();
+      }
+    }
+    return self.clients.openWindow(chan ? './?chat=' + encodeURIComponent(chan) : './');
   }));
 });

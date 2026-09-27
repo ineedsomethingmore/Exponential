@@ -122,7 +122,13 @@ export function ChatPage(p: Props) {
 
   useLayoutEffect(() => {
     const el = listRef.current;
-    if (el && stickBottom.current) el.scrollTop = el.scrollHeight;
+    if (!el || !stickBottom.current) return;
+    el.scrollTop = el.scrollHeight;
+    // attachments and link-preview images report their height AFTER this effect — re-stick
+    // a couple of beats later so an opened thread really lands at the newest message
+    const t1 = window.setTimeout(() => { if (stickBottom.current) el.scrollTop = el.scrollHeight; }, 120);
+    const t2 = window.setTimeout(() => { if (stickBottom.current) el.scrollTop = el.scrollHeight; }, 450);
+    return () => { window.clearTimeout(t1); window.clearTimeout(t2); };
   }, [msgs, activeId]);
 
   const onScroll = () => {

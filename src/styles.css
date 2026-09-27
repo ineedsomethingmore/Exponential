@@ -1357,7 +1357,7 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 /* planner panels keep the desktop Finder-glass; the week's sticky cells are glass too
    (frost + blur), so scrolling day columns blur away beneath them instead of clashing */
 /* both side slots become full-screen sliding windows */
-.shell.phone .detail-slot { position: fixed; inset: 10px 10px calc(env(safe-area-inset-bottom, 0px) + 60px); width: auto !important; z-index: 120; transition: none; } /* stops above the bottom menu, which stays tappable */
+.shell.phone .detail-slot { position: fixed; inset: calc(env(safe-area-inset-top, 0px) + 10px) 10px calc(env(safe-area-inset-bottom, 0px) + 56px); width: auto !important; z-index: 120; transition: none; } /* clears the status bar (taller on zoomed displays) and stops above the bottom menu */
 .shell.phone .detail-slot.clip { display: none; }
 .shell.phone .detail-slot:not(.clip) { animation: phone-slide-r 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .shell.phone .detail-slot.left-slot:not(.clip) { animation-name: phone-slide-l; }
@@ -1384,7 +1384,7 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 .float-tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 140;
   display: flex; justify-content: center; gap: 6px;
-  padding: 6px 14px calc(env(safe-area-inset-bottom, 0px) + 6px);
+  padding: 6px 14px max(0px, calc(env(safe-area-inset-bottom, 0px) - 4px)); /* sits 10px lower */
 }
 .float-tabs button {
   display: flex; flex-direction: column; align-items: center; gap: 4px;

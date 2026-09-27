@@ -229,6 +229,26 @@ export default function App() {
     return () => { stop = true; window.clearInterval(t); document.removeEventListener('visibilitychange', vis); };
   }, []);
 
+  // A tapped push notification lands IN that conversation: the service worker either
+  // postMessages a running window or opens ./?chat=<id> for a cold start.
+  useEffect(() => {
+    if (window.exponential) return;
+    const openChat = (id: string) => { setLeftPanel('chat'); setChatActive(id); setChatJump(true); };
+    const boot = new URLSearchParams(location.search).get('chat');
+    if (boot) {
+      openChat(boot);
+      const url = new URL(location.href);
+      url.searchParams.delete('chat');
+      history.replaceState(history.state, '', url.pathname + url.search + url.hash);
+    }
+    const onMsg = (e: MessageEvent) => {
+      const d = e.data as { type?: string; channelId?: string } | null;
+      if (d?.type === 'open-chat' && d.channelId) openChat(d.channelId);
+    };
+    navigator.serviceWorker?.addEventListener('message', onMsg);
+    return () => navigator.serviceWorker?.removeEventListener('message', onMsg);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Kill Safari's edge-swipe navigation OUTRIGHT: the gesture only starts when a touch
   // BEGINS in the screen-edge bezel, and preventDefault on that touchstart stops it cold.
   // preventDefault also swallows the tap's synthesized click, so a still tap in the strip
