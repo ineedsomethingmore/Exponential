@@ -1357,7 +1357,7 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 /* planner panels go opaque so the week's sticky cells blend without seams */
 .shell.phone .main .panel { background: var(--panel); -webkit-backdrop-filter: none; backdrop-filter: none; }
 /* both side slots become full-screen sliding windows */
-.shell.phone .detail-slot { position: fixed; inset: 10px; width: auto !important; z-index: 120; transition: none; }
+.shell.phone .detail-slot { position: fixed; inset: 10px 10px calc(env(safe-area-inset-bottom, 0px) + 60px); width: auto !important; z-index: 120; transition: none; } /* stops above the bottom menu, which stays tappable */
 .shell.phone .detail-slot.clip { display: none; }
 .shell.phone .detail-slot:not(.clip) { animation: phone-slide-r 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .shell.phone .detail-slot.left-slot:not(.clip) { animation-name: phone-slide-l; }
@@ -1375,19 +1375,15 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 .shell.phone .wk-list { position: sticky; left: 0; z-index: 3; background: var(--panel); }
 .shell.phone .wk-header { position: sticky; top: 0; z-index: 4; background: var(--panel); }
 .shell.phone .wk-header .wk-list { z-index: 5; }
-/* the floating menu bar — the same window recipe as the panels */
+/* the bottom menu — part of the ground, like the desktop rail (no window chrome) */
 .float-tabs {
-  position: fixed; left: 50%; transform: translateX(-50%);
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px); z-index: 140;
-  display: flex; gap: 2px; padding: 5px;
-  border-radius: 18px;
-  background: var(--frost-deep);
-  -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px);
-  box-shadow: 0 0 0 1.5px var(--edge), 0 14px 40px rgba(0, 0, 0, 0.22);
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 140;
+  display: flex; justify-content: center; gap: 6px;
+  padding: 6px 14px calc(env(safe-area-inset-bottom, 0px) + 6px);
 }
 .float-tabs button {
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 7px 16px 5px; border-radius: 13px;
+  padding: 7px 16px 5px; border-radius: 12px;
   font-size: 10px; font-weight: 600; color: var(--text-2);
 }
 .float-tabs button.on { background: var(--ov-6); color: var(--text); }

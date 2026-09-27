@@ -1184,6 +1184,11 @@ export default function App() {
       {mobileShell && (
         <>
           <nav className="float-tabs">
+            <button className={!leftPanel && !selection && view === 'plan' ? 'on' : ''}
+              onClick={() => { setLeftPanel(null); setSelection(null); setMTeamsOpen(false); setView('plan'); }}>
+              <PlanIcon />
+              Plan
+            </button>
             <button className={leftPanel === 'chat' ? 'on' : ''} onClick={() => setLeftPanel(leftPanel === 'chat' ? null : 'chat')}>
               <span className="nav-ico"><ChatIcon />{(chatUnread > 0 || unread > 0) && <span className="nav-dot" />}</span>
               Messages
