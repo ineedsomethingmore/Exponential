@@ -1010,7 +1010,7 @@ export default function App() {
           <button className={mTab === 'plan' ? 'on' : ''} onClick={() => { setSelection(null); setMTab('plan'); }}><PlanIcon /> Plan</button>
           <button className={mTab === 'week' ? 'on' : ''} onClick={() => { setSelection(null); setMTab('week'); }}><WeekIcon /> Week</button>
           <button className={mTeamsOpen ? 'on' : ''} onClick={() => setMTeamsOpen((v) => !v)}>
-            <TeamMark team={teams.find((t) => t.id === data.id) ?? { id: data.id, name: data.name, icon: data.icon }} />
+            <TeamMark team={teams.find((t) => t.id === data.id) ?? { id: data.id, name: data.name, icon: data.icon }} size={18} />
             Teams
           </button>
         </nav>
