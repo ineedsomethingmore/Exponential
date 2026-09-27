@@ -25,6 +25,11 @@ self.addEventListener('notificationclick', (e) => {
   const chan = e.notification.data && e.notification.data.channelId;
   const url = chan ? './?chat=' + encodeURIComponent(chan) : './';
   e.waitUntil((async () => {
+    // postMessage into a suspended iOS page is unreliable — ALSO leave a note in the
+    // shared cache; the page reads and clears it on every launch and foreground return
+    if (chan) {
+      try { const store = await caches.open('exp-pending'); await store.put('./pending-chat', new Response(String(chan))); } catch { }
+    }
     const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const c of cs) {
       try {

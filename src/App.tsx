@@ -247,7 +247,28 @@ export default function App() {
     };
     navigator.serviceWorker?.addEventListener('message', onMsg);
     navigator.serviceWorker?.startMessages?.(); // without this, worker→page messages stay queued forever
-    return () => navigator.serviceWorker?.removeEventListener('message', onMsg);
+    // The reliable path: the worker leaves the pending chat in the shared cache; consume
+    // it on boot and whenever the app returns to the foreground (suspended-page
+    // postMessage delivery is flaky on iOS).
+    const consumePending = async () => {
+      try {
+        const store = await caches.open('exp-pending');
+        const note = await store.match('./pending-chat');
+        if (!note) return;
+        await store.delete('./pending-chat');
+        const id = (await note.text()).trim();
+        if (id) openChat(id);
+      } catch { /* cache unavailable (private mode etc.) */ }
+    };
+    consumePending();
+    const onVis = () => { if (!document.hidden) consumePending(); };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('pageshow', onVis);
+    return () => {
+      navigator.serviceWorker?.removeEventListener('message', onMsg);
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('pageshow', onVis);
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Kill Safari's edge-swipe navigation OUTRIGHT: the gesture only starts when a touch
