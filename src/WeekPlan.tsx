@@ -52,6 +52,14 @@ export function WeekPlan(props: Props) {
   const other = selected !== me; // wording only — someone else's week is fully editable
   const todayIdx = dayIndex(today) - dayIndex(week);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // phones: the day columns scroll horizontally (148px title col + 616px of days, see the
+  // .shell.phone .wk-row CSS) — open with today's column centred; other weeks keep their scroll
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el || el.scrollWidth <= el.clientWidth + 8) return; // desktop layout: nothing scrolls
+    if (todayIdx < 0 || todayIdx > 6) return;
+    el.scrollLeft = Math.max(0, ((todayIdx + 0.5) * 616) / 7 - (el.clientWidth - 148) / 2);
+  }, [week, todayIdx]);
   const [todayX, setTodayX] = useState<number | null>(null);
   // Sideways scrolling only exists when the panel is genuinely too narrow; otherwise the body is
   // overflow-hidden so the swipe animation's transform can never leave a few stray scrollable pixels.

@@ -92,6 +92,12 @@ export function BigPlan(props: Props) {
   const [width, setWidth] = useState(0);
   const widthRef = useRef(0);
   const [view, setView] = useState<View>(() => ({ ppd: 22, origin: dayIndex(today) - 14 }));
+  // phones open with TODAY centred — the desktop default (today ~308px in) is off-screen
+  // at phone widths; measured after mount because the width isn't known before layout
+  useEffect(() => {
+    const w = ref.current?.clientWidth ?? 0;
+    if (w > 0 && w < 700) setView((v) => ({ ...v, origin: dayIndex(today) - w / v.ppd / 2 }));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const viewRef = useRef(view);
   viewRef.current = view;
   const { ppd, origin } = view;

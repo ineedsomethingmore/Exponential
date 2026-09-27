@@ -1227,6 +1227,10 @@ export default function App() {
               <TeamMark team={teams.find((t) => t.id === data.id) ?? { id: data.id, name: data.name, icon: data.icon }} size={18} />
               Teams
             </button>
+            <button onClick={cycleTheme} title={themePref === 'light' ? 'Theme: Light — tap for Dark' : themePref === 'dark' ? 'Theme: Dark — tap for Auto' : 'Theme: Auto — tap for Light'}>
+              {themePref === 'light' ? <SunIcon /> : themePref === 'dark' ? <MoonIcon /> : <AutoThemeIcon />}
+              {themePref === 'light' ? 'Light' : themePref === 'dark' ? 'Dark' : 'Auto'}
+            </button>
           </nav>
           {mTeamsOpen && (
             <div className="mobile-teams" onPointerDown={() => setMTeamsOpen(false)}>
