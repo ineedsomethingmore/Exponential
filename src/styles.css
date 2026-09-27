@@ -1353,7 +1353,7 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 /* ── phone portrait: the DESKTOP shell, phone-ified — everything stays windows/panels ── */
 .shell.phone { padding: 10px; }
 .shell.phone .sidebar { display: none; }
-.shell.phone .main { margin-bottom: 62px; } /* room for the floating bar */
+.shell.phone .main { margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 56px); } /* clear the bottom menu INCLUDING the home-indicator inset */
 /* planner panels keep the desktop Finder-glass; the week's sticky cells are glass too
    (frost + blur), so scrolling day columns blur away beneath them instead of clashing */
 /* both side slots become full-screen sliding windows */
