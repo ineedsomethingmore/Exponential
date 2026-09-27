@@ -6,9 +6,12 @@
     <title>Exponential</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./icons/app-180.png" />
-    <meta name="theme-color" content="#f0f0f3" />
+    <meta name="theme-color" content="#f0f0f3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#050505" media="(prefers-color-scheme: dark)" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <!-- translucent: the app paints its own ground under the clock (phones always follow
+         the system theme, so the status text always contrasts) -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Exponential" />
   </head>
   <body>

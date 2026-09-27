@@ -52,6 +52,16 @@ export function WeekPlan(props: Props) {
   const other = selected !== me; // wording only — someone else's week is fully editable
   const todayIdx = dayIndex(today) - dayIndex(week);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // a task that just entered inline editing (usually a fresh one from + Add task) scrolls
+  // to the centre so the input never hides behind the floating button
+  useEffect(() => {
+    if (!editingId) return;
+    const t = window.setTimeout(() => {
+      (document.activeElement as HTMLElement | null)?.closest?.('.wk-row')?.scrollIntoView({ block: 'center' });
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [editingId]);
+
   // phones: the day columns scroll horizontally (148px title col + 616px of days, see the
   // .shell.phone .wk-row CSS) — open with today's column centred; other weeks keep their scroll
   useEffect(() => {

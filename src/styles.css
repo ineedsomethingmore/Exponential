@@ -1351,7 +1351,7 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 }
 
 /* ── phone portrait: the DESKTOP shell, phone-ified — everything stays windows/panels ── */
-.shell.phone { padding: 10px; }
+.shell.phone { padding: calc(env(safe-area-inset-top, 0px) + 10px) 10px 10px; } /* the page now extends under the status bar */
 .shell.phone .sidebar { display: none; }
 .shell.phone .main { margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 56px); } /* clear the bottom menu INCLUDING the home-indicator inset */
 /* planner panels keep the desktop Finder-glass; the week's sticky cells are glass too
@@ -1375,7 +1375,7 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 /* week: readable day columns scroll horizontally under the sticky title column */
 .shell.phone .wk-body { overflow: auto; padding: 0 0 14px; }
 .shell.phone .wk-swipe { min-width: 100%; width: max-content; }
-.shell.phone .wk-rows { overflow: visible; padding-bottom: 24px; }
+.shell.phone .wk-rows { overflow: visible; padding-bottom: 88px; } /* backlog rows clear the floating Add-task button */
 .shell.phone .wk-row { grid-template-columns: 148px 616px; }
 .shell.phone .wk-list { position: sticky; left: 0; z-index: 3; background: var(--frost); -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px); }
 .shell.phone .wk-header { position: sticky; top: 0; z-index: 4; background: var(--frost); -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px); }
@@ -1387,10 +1387,12 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
   padding: 6px 14px calc(env(safe-area-inset-bottom, 0px) + 6px);
 }
 .float-tabs button {
-  display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 7px 12px 5px; border-radius: 12px;
-  font-size: 10px; font-weight: 600; color: var(--text-2);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 8px 14px 6px; border-radius: 13px;
+  font-size: 11.5px; font-weight: 600; color: var(--text-2);
 }
+.float-tabs button svg { width: 22px; height: 22px; }
+.float-tabs .team-mark { width: 22px !important; height: 22px !important; border-radius: 7px !important; font-size: 11px !important; }
 .float-tabs button.on { background: var(--ov-6); color: var(--text); }
 .web-update {
   position: fixed; left: 50%; transform: translateX(-50%);

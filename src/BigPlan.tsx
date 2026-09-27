@@ -204,6 +204,7 @@ export function BigPlan(props: Props) {
   const dotsLayer = useRef<HTMLDivElement>(null);
   const pendRef = useRef<{ origin: number; scrollY: number } | null>(null);
   const pinchRef = useRef(false); // two touch pointers down: zoom owns the gesture, drags stand down
+  const flingRef = useRef(0); // rAF id of a touch fling in progress (0 = none)
   const dotXRef = useRef(dotX);
   dotXRef.current = dotX;
   const epochRef = useRef(Math.round(view.origin));
@@ -276,6 +277,7 @@ export function BigPlan(props: Props) {
     const schedule = () => { if (!raf) raf = requestAnimationFrame(flush); };
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      if (flingRef.current) { cancelAnimationFrame(flingRef.current); flingRef.current = 0; }
       const cur = pendRef.current ?? { origin: (pendingView ?? viewRef.current).origin, scrollY: scrollRef.current };
       if (!(e.ctrlKey || e.metaKey) && Math.abs(e.deltaX) <= Math.abs(e.deltaY)) {
         gesture(cur.origin, clampRef.current(cur.scrollY + e.deltaY));
@@ -303,6 +305,7 @@ export function BigPlan(props: Props) {
     let pinchDist = 0;
     const onPtrDown = (e: PointerEvent) => {
       if (e.pointerType !== 'touch') return;
+      if (flingRef.current) { cancelAnimationFrame(flingRef.current); flingRef.current = 0; }
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pointers.size === 2) {
         const [a, b] = [...pointers.values()];
@@ -425,9 +428,12 @@ export function BigPlan(props: Props) {
       if (hit && p) { onProjectDown(e, p, hit.mode); return; }
     }
     e.preventDefault();
+    if (flingRef.current) { cancelAnimationFrame(flingRef.current); flingRef.current = 0; } // catching a flinging plan stops it
     const startX = e.clientX, startY = e.clientY;
     const startOrigin = origin;
     const startScroll = pendRef.current?.scrollY ?? scrollRef.current;
+    const touchPan = e.pointerType === 'touch';
+    let vx = 0, vy = 0, lastT = e.timeStamp, lastVX = e.clientX, lastVY = e.clientY;
     let moved = false;
     setGhost(null);
     track(
@@ -435,9 +441,33 @@ export function BigPlan(props: Props) {
         if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3) moved = true;
         // both axes: drag pans horizontally AND scrolls the rows vertically (touch has no wheel)
         if (moved) { touchView(); setPanning(true); gesture(startOrigin - (ev.clientX - startX) / ppd, clampRef.current(startScroll - (ev.clientY - startY))); }
+        const dt = ev.timeStamp - lastT;
+        if (dt > 0) { // exponential moving average keeps the release velocity honest
+          vx = 0.8 * vx + 0.2 * ((ev.clientX - lastVX) / dt);
+          vy = 0.8 * vy + 0.2 * ((ev.clientY - lastVY) / dt);
+          lastT = ev.timeStamp; lastVX = ev.clientX; lastVY = ev.clientY;
+        }
       },
       (ev) => {
         setPanning(false);
+        // touch flings coast with momentum: keep feeding gesture() while velocity decays,
+        // and the normal 140ms settle commits once it stops (like the week's native scroll)
+        if (touchPan && moved && Math.hypot(vx, vy) > 0.08) {
+          let last = performance.now();
+          const step = (now: number) => {
+            const dt = Math.min(50, now - last);
+            last = now;
+            const k = Math.pow(0.995, dt);
+            vx *= k; vy *= k;
+            if (Math.hypot(vx, vy) < 0.02) { flingRef.current = 0; return; }
+            const cur = pendRef.current ?? { origin: viewRef.current.origin, scrollY: scrollRef.current };
+            touchView();
+            gesture(cur.origin - (vx * dt) / viewRef.current.ppd, clampRef.current(cur.scrollY - vy * dt));
+            flingRef.current = requestAnimationFrame(step);
+          };
+          flingRef.current = requestAnimationFrame(step);
+          return;
+        }
         commitGesture();
         if (locked || moved || inRetroStrip(ev.clientY)) return;
         const slot = slotAt(ev.clientX, ev.clientY);
