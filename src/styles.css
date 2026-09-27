@@ -1346,12 +1346,12 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 /* ── phone-sized web app: tabbed shell (Messages / Plan / Week) ── */
 .mobile-shell {
   position: fixed; inset: 0; display: flex; flex-direction: column;
-  background: var(--bg);
+  background: var(--panel); /* one flat surface: sticky title cells and pane contents blend seamlessly */
   padding: env(safe-area-inset-top) 0 0;
 }
 .mobile-shell .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .mobile-shell .chat-main { flex: 1; min-height: 0; }
-.mobile-shell button[title="Close"] { display: none; } /* nothing to close into */
+.mobile-shell .side-head button[title="Close"] { display: none; } /* the chat head's × only — the detail overlay keeps its close */
 .mobile-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border-radius: 0; box-shadow: none; }
 /* plan on touch: the browser must never scroll/zoom the page — BigPlan's own pointer
    gestures (drag = pan, two fingers = pinch zoom) get every event */
@@ -1379,10 +1379,28 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 }
 .mobile-tabs button.on { color: var(--accent); }
 .mobile-detail {
-  position: fixed; inset: 0; z-index: 80; background: var(--bg);
+  position: fixed; inset: 0; z-index: 80; background: var(--panel);
   display: flex; padding-top: env(safe-area-inset-top);
 }
-.mobile-detail .detail { width: 100% !important; max-width: none; }
+.mobile-detail .detail {
+  width: 100% !important; max-width: none; height: 100%; flex: 1;
+  border-radius: 0; box-shadow: none; /* full screen — no floating panel ring ("window border") */
+}
+.gate-build { margin-top: 18px; font-size: 10.5px; color: var(--text-3); opacity: 0.7; }
+.mobile-tabs .team-mark { width: 20px; height: 20px; border-radius: 6px; font-size: 10px; }
+.mobile-teams { position: fixed; inset: 0; z-index: 90; background: var(--scrim, rgba(0,0,0,0.3)); }
+.mobile-teams-card {
+  position: absolute; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 72px);
+  background: var(--panel); border-radius: 14px; padding: 6px;
+  box-shadow: 0 0 0 0.5px var(--line), 0 18px 50px rgba(0, 0, 0, 0.25);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.mobile-teams-card button {
+  display: flex; align-items: center; gap: 10px; padding: 10px 10px; border-radius: 10px;
+  font-weight: 600; font-size: 14px; text-align: left; color: var(--text);
+}
+.mobile-teams-card button.current { background: var(--ov-6); }
+.mobile-teams-card button span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .push-banner {
   position: fixed; left: 50%; transform: translateX(-50%);
   bottom: calc(env(safe-area-inset-bottom) + 136px); z-index: 60; /* clear of both the tab bar and the Add-task fab */

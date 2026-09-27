@@ -167,22 +167,10 @@ export default function App() {
   // Launch splash: the mark slides in from the bottom, plays at least one full shader sweep,
   // and once the teams are loaded it slides up and fades — timed to a sweep boundary, so the
   // stripes have just cleared when it goes.
-  const [splash, setSplash] = useState<'in' | 'out' | 'gone'>(() => (window.exponential ? 'in' : 'gone'));
-  const splashStart = useRef(performance.now());
-  useEffect(() => {
-    if (splash === 'in' && cloudMode) {
-      const elapsed = performance.now() - splashStart.current;
-      const target = Math.max(1, Math.ceil(elapsed / SPLASH_CYCLE_MS)) * SPLASH_CYCLE_MS;
-      const t = window.setTimeout(() => setSplash('out'), target - elapsed);
-      return () => window.clearTimeout(t);
-    }
-    if (splash === 'out') { const t = window.setTimeout(() => setSplash('gone'), 480); return () => window.clearTimeout(t); }
-  }, [splash, cloudMode]);
-
-  const [googleUser, setGoogleUser] = useState<GoogleUser | null>(null);
   // Hosted web app (the PWA): anything that isn't Electron and isn't the local dev preview
   // signs in with Google; localhost can opt in with ?cloud for testing the web flow.
   const hostedWeb = !window.exponential && (!['localhost', '127.0.0.1'].includes(location.hostname) || new URLSearchParams(location.search).has('cloud'));
+  const [googleUser, setGoogleUser] = useState<GoogleUser | null>(null);
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 700px)').matches);
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 700px)');
@@ -192,6 +180,7 @@ export default function App() {
   }, []);
   const mobileShell = !window.exponential && isMobile;
   const [mTab, setMTab] = useState<'chat' | 'plan' | 'week'>('chat');
+  const [mTeamsOpen, setMTeamsOpen] = useState(false);
   const chatBackRef = useRef<(() => boolean) | null>(null);
   const selRef = useRef<Selection | null>(null);
   selRef.current = selection;
@@ -221,6 +210,19 @@ export default function App() {
     else setPushState(s === 'needs-install' ? 'install' : 'none');
   }, []);
   const [authChecked, setAuthChecked] = useState(!window.exponential); // browser preview has no Google
+
+  const [splash, setSplash] = useState<'in' | 'out' | 'gone'>(() => (window.exponential || hostedWeb ? 'in' : 'gone'));
+  const splashStart = useRef(performance.now());
+  useEffect(() => {
+    // web without a session exits the splash into the sign-in gate; everyone else holds it until the team is loaded
+    if (splash === 'in' && (cloudMode || (hostedWeb && authChecked && !googleUser))) {
+      const elapsed = performance.now() - splashStart.current;
+      const target = Math.max(1, Math.ceil(elapsed / SPLASH_CYCLE_MS)) * SPLASH_CYCLE_MS;
+      const t = window.setTimeout(() => setSplash('out'), target - elapsed);
+      return () => window.clearTimeout(t);
+    }
+    if (splash === 'out') { const t = window.setTimeout(() => setSplash('gone'), 480); return () => window.clearTimeout(t); }
+  }, [splash, cloudMode, hostedWeb, authChecked, googleUser]); // eslint-disable-line react-hooks/exhaustive-deps
   const [googleConfig, setGoogleConfig] = useState<GoogleConfig | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [calEvents, setCalEvents] = useState<Record<string, CalendarEvent[]>>({});
@@ -658,31 +660,10 @@ export default function App() {
     );
   }
 
-  // Hosted web: the sign-in gate, then a quiet loading card while the team fetches.
-  if (hostedWeb && !googleUser) {
-    return (
-      <div className="gate">
-        <div className="gate-card">
-          <img className="gate-logo" src={logoUrl} alt="" />
-          <h1>Welcome to Exponential</h1>
-          {authError && <p className="error">{authError}</p>}
-          <button className="gate-btn" onClick={signIn}><GoogleG /> Continue with Google</button>
-        </div>
-      </div>
-    );
-  }
-  if (!window.exponential && googleUser && !cloudMode) {
-    return (
-      <div className="gate">
-        <div className="gate-card">
-          <img className="gate-logo" src={logoUrl} alt="" />
-          <p className="muted">{cloudError ?? 'Loading your team…'}</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (window.exponential && (!cloudMode || splash !== 'gone')) {
+  // Launch splash (desktop AND the hosted web app): holds while the team loads; on web
+  // without a session it sweeps once and hands over to the sign-in gate below.
+  if ((window.exponential && (!cloudMode || splash !== 'gone'))
+    || (hostedWeb && (splash !== 'gone' || (!!googleUser && !cloudMode)))) {
     return (
       <div className={`splash${splash === 'out' ? ' out' : ''}`}>
         <div className="splash-mark">
@@ -705,6 +686,22 @@ export default function App() {
             style={{ width: 150, height: 100 }}
           />
           {cloudError && <p className="error">{cloudError}</p>}
+        </div>
+      </div>
+    );
+  }
+
+  // Hosted web, no session: sign in with Google (the tiny build stamp answers "is my
+  // phone running the latest deploy?" without any tooling).
+  if (hostedWeb && !googleUser) {
+    return (
+      <div className="gate">
+        <div className="gate-card">
+          <img className="gate-logo" src={logoUrl} alt="" />
+          <h1>Welcome to Exponential</h1>
+          {authError && <p className="error">{authError}</p>}
+          <button className="gate-btn" onClick={signIn}><GoogleG /> Continue with Google</button>
+          <p className="gate-build">{__BUILD__}</p>
         </div>
       </div>
     );
@@ -1012,7 +1009,23 @@ export default function App() {
           </button>
           <button className={mTab === 'plan' ? 'on' : ''} onClick={() => { setSelection(null); setMTab('plan'); }}><PlanIcon /> Plan</button>
           <button className={mTab === 'week' ? 'on' : ''} onClick={() => { setSelection(null); setMTab('week'); }}><WeekIcon /> Week</button>
+          <button className={mTeamsOpen ? 'on' : ''} onClick={() => setMTeamsOpen((v) => !v)}>
+            <TeamMark team={teams.find((t) => t.id === data.id) ?? { id: data.id, name: data.name, icon: data.icon }} />
+            Teams
+          </button>
         </nav>
+        {mTeamsOpen && (
+          <div className="mobile-teams" onPointerDown={() => setMTeamsOpen(false)}>
+            <div className="mobile-teams-card" onPointerDown={(e) => e.stopPropagation()}>
+              {teams.map((t) => (
+                <button key={t.id} className={t.id === data.id ? 'current' : ''}
+                  onClick={() => { setMTeamsOpen(false); if (t.id !== data.id) { switchTeam(t.id); setSelection(null); setSelectedPerson(null); setMTab('chat'); } }}>
+                  <TeamMark team={t} /> <span>{t.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {pushState === 'ok-off' && (
           <button className="pill push-banner" onClick={async () => setPushState((await enablePush()) === 'on' ? 'on' : 'ok-off')}>
             Enable notifications

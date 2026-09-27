@@ -327,7 +327,9 @@ export function BigPlan(props: Props) {
     const onPtrEnd = (e: PointerEvent) => {
       if (!pointers.delete(e.pointerId)) return;
       if (pointers.size < 2) pinchDist = 0;
-      if (pointers.size === 0) pinchRef.current = false;
+      // clear AFTER the tap detectors' own pointerup handlers ran — the last finger of a
+      // pinch must never read as a still tap on whatever it happened to land on
+      if (pointers.size === 0) window.setTimeout(() => { pinchRef.current = false; }, 120);
     };
     el.addEventListener('pointerdown', onPtrDown);
     window.addEventListener('pointermove', onPtrMove);
@@ -476,7 +478,7 @@ export function BigPlan(props: Props) {
     let moved = false;
     track(
       (ev) => { if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3) moved = true; },
-      () => { if (!moved) { if (multi) toggle(); else open(); } },
+      () => { if (!moved && !pinchRef.current) { if (multi) toggle(); else open(); } }, // releasing a pinch is not a tap
     );
   };
 
@@ -518,7 +520,7 @@ export function BigPlan(props: Props) {
       () => {
         document.body.classList.remove('cursor-grabbing', 'cursor-ew');
         setDrag(null);
-        if (!latest.moved) { if (multi) onToggleSelect(p.id); else onOpenProject(p); }
+        if (!latest.moved && !pinchRef.current) { if (multi) onToggleSelect(p.id); else onOpenProject(p); }
         else if (asGroup) { if (latest.dd) onMoveMany(groupSel, latest.dd); }
         else onMoveProject(p.id, { start: fromDayIndex(latest.start), end: fromDayIndex(latest.end), lane: latest.lane, groupId: latest.groupId });
       },
@@ -545,7 +547,7 @@ export function BigPlan(props: Props) {
       () => {
         document.body.classList.remove('cursor-grabbing');
         setDlDrag(null);
-        if (!moved) { if (multi) onToggleSelect(d.id); else onOpenDeadline(d); }
+        if (!moved && !pinchRef.current) { if (multi) onToggleSelect(d.id); else onOpenDeadline(d); }
         else if (latest !== d0) onMoveDeadline(d.id, fromDayIndex(latest));
       },
     );
@@ -704,7 +706,7 @@ export function BigPlan(props: Props) {
               window.removeEventListener('pointerup', up);
               document.body.classList.remove('cursor-grabbing');
               setGDrag(null);
-              if (!moved) { onOpenGroup(g); return; }
+              if (!moved && !pinchRef.current) { onOpenGroup(g); return; }
               // the drop lands exactly where the preview showed
               const ordered = [...groupsRef.current].sort((a, b) => a.sort - b.sort).map((x) => x.id).filter((id) => id !== g.id);
               ordered.splice(groupDragPreview(sectionsRef.current, g.id, ev.clientY - startY).ins, 0, g.id);
@@ -811,7 +813,7 @@ export function BigPlan(props: Props) {
                   const next = fromDayIndex(startWeek + shift);
                   if (next !== weekRef.current) onWeekChange(next);
                 },
-                () => { setBandDrag(false); if (!moved) onOpenRetro(week); },
+                () => { setBandDrag(false); if (!moved && !pinchRef.current) onOpenRetro(week); },
               );
             }}
           >
