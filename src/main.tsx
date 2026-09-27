@@ -10,6 +10,11 @@ if ((window as Window & { exponential?: { platform: string } }).exponential?.pla
 if (!(window as Window & { exponential?: unknown }).exponential && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js').catch(() => {}); });
 }
+// iOS Safari synthesises page pinch-zoom through GestureEvents — block it so pinching the
+// master plan zooms the PLAN (its own pointer-based pinch), never the page.
+if (!(window as Window & { exponential?: unknown }).exponential) {
+  for (const t of ['gesturestart', 'gesturechange']) document.addEventListener(t, (e) => e.preventDefault());
+}
 
 const isWidget = new URLSearchParams(location.search).get('mode') === 'widget';
 

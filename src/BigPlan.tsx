@@ -197,6 +197,7 @@ export function BigPlan(props: Props) {
   const scrollLayer = useRef<HTMLDivElement>(null);
   const dotsLayer = useRef<HTMLDivElement>(null);
   const pendRef = useRef<{ origin: number; scrollY: number } | null>(null);
+  const pinchRef = useRef(false); // two touch pointers down: zoom owns the gesture, drags stand down
   const dotXRef = useRef(dotX);
   dotXRef.current = dotX;
   const epochRef = useRef(Math.round(view.origin));
@@ -290,7 +291,56 @@ export function BigPlan(props: Props) {
       }
     };
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => { el.removeEventListener('wheel', onWheel); if (raf) cancelAnimationFrame(raf); };
+    // Touch pinch = exactly the ctrl+wheel zoom, anchored to the midpoint between the
+    // fingers. While two fingers are down every drag handler stands down (pinchRef).
+    const pointers = new Map<number, { x: number; y: number }>();
+    let pinchDist = 0;
+    const onPtrDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 2) {
+        const [a, b] = [...pointers.values()];
+        pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+        pinchRef.current = true;
+      }
+    };
+    const onPtrMove = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' || !pointers.has(e.pointerId)) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size !== 2 || !pinchDist) return;
+      const [a, b] = [...pointers.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      if (dist < 8) return;
+      const factor = dist / pinchDist;
+      pinchDist = dist;
+      touchView();
+      const basePpd = (pendingView ?? viewRef.current).ppd;
+      window.clearTimeout(settleTimer.current);
+      const cur = pendRef.current ?? { origin: (pendingView ?? viewRef.current).origin, scrollY: scrollRef.current };
+      if (pendRef.current) { setScrollY(clampRef.current(pendRef.current.scrollY)); pendRef.current = null; }
+      const mx = (a.x + b.x) / 2 - el.getBoundingClientRect().left;
+      const next = Math.min(MAX_PPD, Math.max(MIN_PPD, basePpd * factor));
+      const dayUnderMid = cur.origin + mx / basePpd;
+      pendingView = { ppd: next, origin: dayUnderMid - mx / next };
+      schedule();
+    };
+    const onPtrEnd = (e: PointerEvent) => {
+      if (!pointers.delete(e.pointerId)) return;
+      if (pointers.size < 2) pinchDist = 0;
+      if (pointers.size === 0) pinchRef.current = false;
+    };
+    el.addEventListener('pointerdown', onPtrDown);
+    window.addEventListener('pointermove', onPtrMove);
+    window.addEventListener('pointerup', onPtrEnd);
+    window.addEventListener('pointercancel', onPtrEnd);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('pointerdown', onPtrDown);
+      window.removeEventListener('pointermove', onPtrMove);
+      window.removeEventListener('pointerup', onPtrEnd);
+      window.removeEventListener('pointercancel', onPtrEnd);
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // All day-positioned chrome lives in transform-panned containers: children get STABLE
@@ -304,12 +354,13 @@ export function BigPlan(props: Props) {
   const x = (iso: ISODate) => (dayIndex(iso) - origin) * ppd;
 
   const track = (move: (ev: PointerEvent) => void, up: (ev: PointerEvent) => void) => {
+    const guarded = (ev: PointerEvent) => { if (pinchRef.current) return; move(ev); }; // a second finger means pinch-zoom, not a drag
     const onUp = (ev: PointerEvent) => {
       up(ev);
-      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointermove', guarded);
       window.removeEventListener('pointerup', onUp);
     };
-    window.addEventListener('pointermove', move);
+    window.addEventListener('pointermove', guarded);
     window.addEventListener('pointerup', onUp);
   };
 

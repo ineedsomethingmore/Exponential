@@ -200,9 +200,12 @@ export default function App() {
   // navigation: close the open item, else leave the thread, else stay put.
   useEffect(() => {
     if (!mobileShell) return;
+    // TWO sentinels: even if a gesture races the re-push, the second entry still stands
+    // between the user and the OAuth pages further down the stack.
     history.pushState({ exp: 1 }, '');
+    history.pushState({ exp: 2 }, '');
     const onPop = () => {
-      history.pushState({ exp: 1 }, '');
+      history.pushState({ exp: 2 }, '');
       if (selRef.current) { setSelection(null); return; }
       chatBackRef.current?.();
     };
@@ -891,6 +894,7 @@ export default function App() {
               calendar={{
                 enabled: calendarOn,
                 available: !!googleUser,
+                hidden: !window.exponential, // the web build has no Google Calendar at all
                 events: calEvents[calKey] ?? [],
                 note: !window.exponential ? 'Available in the desktop app' : !googleUser ? 'Sign in with Google to see events' : calNote,
                 onReauth: calReauth ? reauthCalendar : undefined,

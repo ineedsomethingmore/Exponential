@@ -35,7 +35,7 @@ interface Props {
   onOpen: (t: Task) => void;
   onReorder: (id: string, afterId: string | null) => void; // drop the task right after this one (null = top of its day)
   onWeekChange: (monday: ISODate) => void;
-  calendar: { enabled: boolean; available: boolean; events: CalendarEvent[]; note?: string; onReauth?: () => void };
+  calendar: { enabled: boolean; available: boolean; events: CalendarEvent[]; note?: string; onReauth?: () => void; hidden?: boolean };
   onToggleCalendar: () => void;
   teamBadge?: (id: string) => { id?: string; name: string; icon?: string } | undefined; // set for tasks pulled in from OTHER teams
   allTeams?: { on: boolean; toggle: () => void }; // "All teams" pill (multi-team members only)
@@ -44,7 +44,8 @@ interface Props {
 
 /** Everyone has full freedom in everyone's week — the owner just hears about changes others make. */
 export function WeekPlan(props: Props) {
-  const { people, me, selected, onSelect, week, today, tasks, selectedId, selectedIds, editingId, onToggleSelect, onAdd, onAddNamed, onRename, onEdit, onUpdate, onDelete, onDuplicate, onDeleteMany, onDeny, onCompleteReview, onOpen, onReorder, onWeekChange, calendar, onToggleCalendar, teamBadge, allTeams, headExtra } = props;
+  const { people, me, selected, onSelect, week, today, tasks, selectedId, selectedIds, editingId, onToggleSelect, onAdd, onAddNamed, onRename, onEdit, onUpdate, onDelete, onDuplicate, onDeleteMany, onDeny, onCompleteReview, onOpen, onReorder, onWeekChange, onToggleCalendar, teamBadge, allTeams, headExtra } = props;
+  const calendar = props.calendar.hidden ? { ...props.calendar, enabled: false } : props.calendar; // web build: no calendar at all
   const days = Array.from({ length: 7 }, (_, i) => addDays(week, i));
   // Invited members who haven't signed in yet can't own tasks (their rows wouldn't persist).
   const readonly = selected.startsWith('pending:');
@@ -217,13 +218,15 @@ export function WeekPlan(props: Props) {
     <>
       <div className="panel-head">
         <div className="panel-title">Week {isoWeekNumber(week)}</div>
-        <button
-          className={`pill toggle${calendar.enabled ? ' active' : ''}`}
-          onClick={onToggleCalendar}
-          title={calendar.available ? 'Show Google Calendar events' : 'Sign in with Google to show calendar events'}
-        >
-          <CalIcon /> Calendar
-        </button>
+        {!calendar.hidden && (
+          <button
+            className={`pill toggle${calendar.enabled ? ' active' : ''}`}
+            onClick={onToggleCalendar}
+            title={calendar.available ? 'Show Google Calendar events' : 'Sign in with Google to show calendar events'}
+          >
+            <CalIcon /> Calendar
+          </button>
+        )}
         {allTeams && (
           <button className={`pill toggle${allTeams.on ? ' active' : ''}`} onClick={allTeams.toggle} title="Show your tasks from every team you're in">
             All teams
