@@ -433,10 +433,24 @@ function TaskRow({ task, week, readonly, reviewRow, team, people, me, selected, 
     const startX = e.clientX, startY = e.clientY;
     const rowH = rowRef.current?.offsetHeight ?? 36;
     const multi = e.metaKey || e.shiftKey || e.ctrlKey;
+    // TOUCH: a drag must be EARNED with a ~300ms still hold; a quick swipe scrolls the
+    // week instead (manually — touch-action is none on blocks so the browser stays out)
+    const touch = e.pointerType === 'touch';
+    const scroller = touch ? (e.currentTarget as HTMLElement).closest('.wk-body') as HTMLElement | null : null;
+    let armed = !touch;
+    let scrolling = false;
+    let lastX = e.clientX, lastY = e.clientY;
+    const armTimer = touch ? window.setTimeout(() => { armed = true; }, 300) : 0;
     let moved = false;
     let axis: 'x' | 'y' | null = null; // decided by the first clear movement
     let latest: BlockDrag = { mode, s: s0, e: e0 };
     const move = (ev: PointerEvent) => {
+      if (!armed) {
+        if (!scrolling && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 8) { scrolling = true; window.clearTimeout(armTimer); }
+        if (scrolling && scroller) { scroller.scrollLeft -= ev.clientX - lastX; scroller.scrollTop -= ev.clientY - lastY; }
+        lastX = ev.clientX; lastY = ev.clientY;
+        return;
+      }
       const dx = ev.clientX - startX, dy = ev.clientY - startY;
       if (!axis && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) axis = mode === 'move' && Math.abs(dy) > Math.abs(dx) ? 'y' : 'x';
       if (axis === 'y') { moved = true; onLift(dy, rowH); return; }
@@ -448,10 +462,12 @@ function TaskRow({ task, week, readonly, reviewRow, team, people, me, selected, 
       setLive(latest);
     };
     const up = () => {
+      window.clearTimeout(armTimer);
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       document.body.classList.remove('cursor-grabbing', 'cursor-ew');
       setLive(null);
+      if (scrolling) return; // the touch was a scroll, not a tap or a drag
       if (axis === 'y') { onDrop(); return; }
       if (!moved) { if (multi) onToggleSelect(task.id); else onOpen(task); }
       else if (latest.s !== s0 || latest.e !== e0) {
@@ -467,17 +483,33 @@ function TaskRow({ task, week, readonly, reviewRow, team, people, me, selected, 
     if (e.button !== 0 || (e.target as HTMLElement).closest('.status-btn, .status-menu, .inline-name')) return;
     e.preventDefault();
     const startY = e.clientY;
+    const startX = e.clientX;
     const rowH = rowRef.current?.offsetHeight ?? 36;
     const multi = e.metaKey || e.shiftKey || e.ctrlKey;
+    // touch reordering needs the same hold-to-arm as blocks; a quick swipe scrolls
+    const touch = e.pointerType === 'touch';
+    const scroller = touch ? (e.currentTarget as HTMLElement).closest('.wk-body') as HTMLElement | null : null;
+    let armed = !touch;
+    let scrolling = false;
+    let lastX = e.clientX, lastY = e.clientY;
+    const armTimer = touch ? window.setTimeout(() => { armed = true; }, 300) : 0;
     let moved = false;
     const move = (ev: PointerEvent) => {
+      if (!armed) {
+        if (!scrolling && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 8) { scrolling = true; window.clearTimeout(armTimer); }
+        if (scrolling && scroller) { scroller.scrollLeft -= ev.clientX - lastX; scroller.scrollTop -= ev.clientY - lastY; }
+        lastX = ev.clientX; lastY = ev.clientY;
+        return;
+      }
       const dy = ev.clientY - startY;
       if (Math.abs(dy) > 4) moved = true;
       if (moved && !readonly && !reviewRow) onLift(dy, rowH);
     };
     const up = () => {
+      window.clearTimeout(armTimer);
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      if (scrolling) return;
       if (!moved) { if (multi) onToggleSelect(task.id); else onOpen(task); }
       else onDrop();
     };

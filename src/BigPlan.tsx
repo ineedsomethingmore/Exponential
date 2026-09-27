@@ -425,14 +425,16 @@ export function BigPlan(props: Props) {
       if (hit && p) { onProjectDown(e, p, hit.mode); return; }
     }
     e.preventDefault();
-    const startX = e.clientX;
+    const startX = e.clientX, startY = e.clientY;
     const startOrigin = origin;
+    const startScroll = pendRef.current?.scrollY ?? scrollRef.current;
     let moved = false;
     setGhost(null);
     track(
       (ev) => {
-        if (Math.abs(ev.clientX - startX) > 3) moved = true;
-        if (moved) { touchView(); setPanning(true); gesture(startOrigin - (ev.clientX - startX) / ppd, pendRef.current?.scrollY ?? scrollRef.current); }
+        if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3) moved = true;
+        // both axes: drag pans horizontally AND scrolls the rows vertically (touch has no wheel)
+        if (moved) { touchView(); setPanning(true); gesture(startOrigin - (ev.clientX - startX) / ppd, clampRef.current(startScroll - (ev.clientY - startY))); }
       },
       (ev) => {
         setPanning(false);

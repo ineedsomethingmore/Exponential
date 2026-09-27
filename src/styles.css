@@ -1365,8 +1365,13 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 @keyframes phone-slide-l { from { transform: translateX(-60%); opacity: 0; } }
 .shell.phone .detail-slot .vresizer { display: none; }
 .shell.phone .detail, .shell.phone .side-embed { width: 100% !important; flex: 1; }
-/* plan on touch: BigPlan owns every gesture (drag pans, two fingers pinch-zoom) */
+/* plan on touch: BigPlan owns every gesture (drag pans, two fingers pinch-zoom);
+   editing is hidden on phones — the Unlock pill goes away entirely */
 .shell.phone .timeline { touch-action: none; }
+.shell.phone .plan-lock { display: none; }
+/* week on touch: blocks and title cells own their touches — hold 300ms to drag,
+   quick swipes scroll (re-applied manually by the drag handlers) */
+.shell.phone .wk-block, .shell.phone .wk-row .wk-list { touch-action: none; }
 /* week: readable day columns scroll horizontally under the sticky title column */
 .shell.phone .wk-body { overflow: auto; padding: 0 0 14px; }
 .shell.phone .wk-swipe { min-width: 100%; width: max-content; }

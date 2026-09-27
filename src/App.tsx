@@ -137,7 +137,7 @@ export default function App() {
     mq.addEventListener('change', h);
     return () => mq.removeEventListener('change', h);
   }, []);
-  const theme: 'light' | 'dark' = themePref || (sysDark ? 'dark' : 'light');
+  const theme: 'light' | 'dark' = (mobileShell ? '' : themePref) || (sysDark ? 'dark' : 'light'); // phones always follow the system
   // Light → Dark → Auto (follow the system) → Light …
   const cycleTheme = () => setThemePref((p) => (p === 'light' ? 'dark' : p === 'dark' ? '' : 'light'));
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
@@ -236,13 +236,35 @@ export default function App() {
   useEffect(() => {
     if (!mobileShell) return;
     const EDGE = 28;
-    let edge: { id: number; x: number; y: number; target: EventTarget | null } | null = null;
+    let edge: { id: number; x: number; y: number; lx: number; ly: number; target: EventTarget | null; scroller: HTMLElement | null | undefined } | null = null;
+    // preventDefault killed the NATIVE scroll too — a swipe that starts in the edge strip
+    // now scrolls the nearest scrollable ancestor manually (thumbs live in that strip)
+    const findScroller = (from: EventTarget | null): HTMLElement | null => {
+      let el = from as HTMLElement | null;
+      if (el?.closest?.('.wk-block, .wk-list, .timeline')) return null; // those own their touches
+      while (el) {
+        const cs = getComputedStyle(el);
+        if ((/(auto|scroll)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 4)
+          || (/(auto|scroll)/.test(cs.overflowX) && el.scrollWidth > el.clientWidth + 4)) return el;
+        el = el.parentElement;
+      }
+      return null;
+    };
     const onStart = (e: TouchEvent) => {
       const t = e.touches[0];
       if (e.touches.length === 1 && (t.pageX < EDGE || t.pageX > window.innerWidth - EDGE)) {
         e.preventDefault();
-        edge = { id: t.identifier, x: t.pageX, y: t.pageY, target: e.target };
+        edge = { id: t.identifier, x: t.pageX, y: t.pageY, lx: t.pageX, ly: t.pageY, target: e.target, scroller: undefined };
       }
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!edge) return;
+      const t = [...e.touches].find((x) => x.identifier === edge!.id);
+      if (!t) return;
+      const dx = t.pageX - edge.lx, dy = t.pageY - edge.ly;
+      edge.lx = t.pageX; edge.ly = t.pageY;
+      if (edge.scroller === undefined && (Math.abs(t.pageX - edge.x) > 8 || Math.abs(t.pageY - edge.y) > 8)) edge.scroller = findScroller(edge.target);
+      if (edge.scroller) { edge.scroller.scrollTop -= dy; edge.scroller.scrollLeft -= dx; }
     };
     const onEnd = (e: TouchEvent) => {
       if (!edge) return;
@@ -256,9 +278,11 @@ export default function App() {
       else el.click();
     };
     document.addEventListener('touchstart', onStart, { passive: false });
+    document.addEventListener('touchmove', onMove, { passive: true });
     document.addEventListener('touchend', onEnd, { passive: true });
     return () => {
       document.removeEventListener('touchstart', onStart);
+      document.removeEventListener('touchmove', onMove);
       document.removeEventListener('touchend', onEnd);
     };
   }, [mobileShell]);
@@ -1176,7 +1200,7 @@ export default function App() {
               <div className="panel-spacer" />
               {!isThisWeek && <button className="pill" onClick={() => setWeek(weekStart(today))}>Back to this week</button>}
               <button
-                className={`pill toggle${unlocked ? ' active' : ''}`}
+                className={`pill toggle plan-lock${unlocked ? ' active' : ''}`}
                 onClick={() => setUnlocked((v) => !v)}
                 title={unlocked ? 'Lock the master plan' : 'Unlock to add and move projects, deadlines and groups'}
               >
@@ -1226,10 +1250,6 @@ export default function App() {
             <button className={mTeamsOpen ? 'on' : ''} onClick={() => setMTeamsOpen((v) => !v)}>
               <TeamMark team={teams.find((t) => t.id === data.id) ?? { id: data.id, name: data.name, icon: data.icon }} size={18} />
               Teams
-            </button>
-            <button onClick={cycleTheme} title={themePref === 'light' ? 'Theme: Light — tap for Dark' : themePref === 'dark' ? 'Theme: Dark — tap for Auto' : 'Theme: Auto — tap for Light'}>
-              {themePref === 'light' ? <SunIcon /> : themePref === 'dark' ? <MoonIcon /> : <AutoThemeIcon />}
-              {themePref === 'light' ? 'Light' : themePref === 'dark' ? 'Dark' : 'Auto'}
             </button>
           </nav>
           {mTeamsOpen && (
