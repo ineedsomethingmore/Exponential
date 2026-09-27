@@ -49,6 +49,14 @@ export default function App() {
   // column (left panel, planners, right panel) keeps at least ~a fifth of the window.
   const [leftPanel, setLeftPanel] = useState<'chat' | 'meetings' | null>(null);
   const [sideOpen, setSideOpen] = useState(() => prefs.sideOpen); // sidebar toggled wide (was hover-expand)
+  const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 700px)').matches);
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 700px)');
+    const on = () => setIsMobile(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
+  const mobileShell = !window.exponential && isMobile;
   const [leftW, setLeftW] = useState(415);
   const [lResizing, setLResizing] = useState(false);
   const leftWRef = useRef(leftW); leftWRef.current = leftW;
@@ -96,7 +104,10 @@ export default function App() {
   useEffect(() => {
     const wasOpen = prevOpenKind.current !== null, isOpen = openKind !== null;
     prevOpenKind.current = openKind;
-    if (wasOpen !== isOpen) setSlotAnimating(true);
+    // phone: the slot is a fixed overlay with no width transition — a transitionend would
+    // never fire and 'clip' would stick, hiding the panel forever
+    const phone = !window.exponential && window.matchMedia('(max-width: 700px)').matches;
+    if (wasOpen !== isOpen && !phone) setSlotAnimating(true);
   }, [openKind]);
 
   // The plan stays unlocked while you work in the app; it relocks only when the window
@@ -153,6 +164,7 @@ export default function App() {
   // window resizes (and panels opening) re-fit both widths so no column gets squished
   useEffect(() => {
     const fit = () => {
+      if (mobileShell) return; // phone: both slots are full-screen overlays, no width budget
       const mp = minPanelW();
       const budget = sideBudget();
       setDetailW((w) => Math.max(mp, Math.min(w, budget - 14 - (leftOpenRef.current ? leftWRef.current + 14 : 0))));
@@ -161,7 +173,7 @@ export default function App() {
     fit();
     window.addEventListener('resize', fit);
     return () => window.removeEventListener('resize', fit);
-  }, [leftPanel, selection?.kind, sideOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [leftPanel, selection?.kind, sideOpen, mobileShell]); // eslint-disable-line react-hooks/exhaustive-deps
   const mainRef = useRef<HTMLDivElement>(null);
 
   // Launch splash: the mark slides in from the bottom, plays at least one full shader sweep,
@@ -171,15 +183,6 @@ export default function App() {
   // signs in with Google; localhost can opt in with ?cloud for testing the web flow.
   const hostedWeb = !window.exponential && (!['localhost', '127.0.0.1'].includes(location.hostname) || new URLSearchParams(location.search).has('cloud'));
   const [googleUser, setGoogleUser] = useState<GoogleUser | null>(null);
-  const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 700px)').matches);
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 700px)');
-    const on = () => setIsMobile(mq.matches);
-    mq.addEventListener('change', on);
-    return () => mq.removeEventListener('change', on);
-  }, []);
-  const mobileShell = !window.exponential && isMobile;
-  const [mTab, setMTab] = useState<'chat' | 'plan' | 'week'>('chat');
   const [mTeamsOpen, setMTeamsOpen] = useState(false);
   const chatBackRef = useRef<(() => boolean) | null>(null);
   const selRef = useRef<Selection | null>(null);
@@ -196,7 +199,8 @@ export default function App() {
     const onPop = () => {
       history.pushState({ exp: 2 }, '');
       if (selRef.current) { setSelection(null); return; }
-      chatBackRef.current?.();
+      if (chatBackRef.current?.()) return;
+      if (leftOpenRef.current) setLeftPanel(null);
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -1008,73 +1012,8 @@ export default function App() {
           />
   ) : null);
 
-  if (mobileShell) {
-    return (
-      <div className="mobile-shell">
-        {mTab === 'chat' && (
-          <ChatPage
-            teamId={data.id}
-            me={data.me}
-            people={data.people}
-            canModerate={data.moderators.includes(data.me)}
-            cloud={cloudMode}
-            channels={chat}
-            activeId={chatActive}
-            onActive={setChatActive}
-            onRefreshChannels={refreshChat}
-            notifications={data.notifications ?? []}
-            notifUnread={unread}
-            onOpenItem={(sel) => setSelection(sel)}
-            onMarkRead={(ids) => update((d) => ({ ...d, notifications: (d.notifications ?? []).map((n) => (ids.includes(n.id) ? { ...n, read: true } : n)) }), 'mark-read')}
-            onClose={() => {}}
-            onError={(m) => { setSaveError(m); window.setTimeout(() => setSaveError(null), 6000); }}
-            jumpToThread={chatJump}
-            onJumped={() => setChatJump(false)}
-            backRef={chatBackRef}
-          />
-        )}
-        {mTab === 'plan' && <section className="panel mobile-pane">{bigPlanEl}</section>}
-        {mTab === 'week' && <section className="panel mobile-pane">{weekPlanEl}</section>}
-        {selection && <div className="mobile-detail">{detailEl(window.innerWidth)}</div>}
-        <nav className="mobile-tabs">
-          <button className={mTab === 'chat' ? 'on' : ''} onClick={() => { setSelection(null); setMTab('chat'); }}>
-            <span className="nav-ico"><ChatIcon />{(chatUnread > 0 || unread > 0) && <span className="nav-dot" />}</span>
-            Messages
-          </button>
-          <button className={mTab === 'plan' ? 'on' : ''} onClick={() => { setSelection(null); setMTab('plan'); }}><PlanIcon /> Plan</button>
-          <button className={mTab === 'week' ? 'on' : ''} onClick={() => { setSelection(null); setMTab('week'); }}><WeekIcon /> Week</button>
-          <button className={mTeamsOpen ? 'on' : ''} onClick={() => setMTeamsOpen((v) => !v)}>
-            <TeamMark team={teams.find((t) => t.id === data.id) ?? { id: data.id, name: data.name, icon: data.icon }} size={18} />
-            Teams
-          </button>
-        </nav>
-        {mTeamsOpen && (
-          <div className="mobile-teams" onPointerDown={() => setMTeamsOpen(false)}>
-            <div className="mobile-teams-card" onPointerDown={(e) => e.stopPropagation()}>
-              {teams.map((t) => (
-                <button key={t.id} className={t.id === data.id ? 'current' : ''}
-                  onClick={() => { setMTeamsOpen(false); if (t.id !== data.id) { switchTeam(t.id); setSelection(null); setSelectedPerson(null); setMTab('chat'); } }}>
-                  <TeamMark team={t} /> <span>{t.name}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        {pushState === 'ok-off' && (
-          <button className="pill push-banner" onClick={async () => setPushState((await enablePush()) === 'on' ? 'on' : 'ok-off')}>
-            Enable notifications
-          </button>
-        )}
-        {pushState === 'install' && (
-          <div className="push-banner note">For notifications: Share → Add to Home Screen, then open Exponential from there</div>
-        )}
-        {saveError && <div className="toast error-toast">{saveError}</div>}
-      </div>
-    );
-  }
-
   return (
-    <div className="shell">
+    <div className={`shell${mobileShell ? ' phone' : ''}`}>
       <aside className={`sidebar${window.exponential?.platform === 'darwin' ? ' mac' : ''}${sideOpen ? ' open' : ''}`}>
        <div className="sidebar-inner">
         <div className="team-list">
@@ -1180,6 +1119,7 @@ export default function App() {
                   onError={(m) => { setSaveError(m); window.setTimeout(() => setSaveError(null), 6000); }}
                   jumpToThread={chatJump}
                   onJumped={() => setChatJump(false)}
+                  backRef={chatBackRef}
                 />
               )}
               {leftPanel === 'meetings' && (
@@ -1241,6 +1181,44 @@ export default function App() {
         </div>
       </div>
 
+      {mobileShell && (
+        <>
+          <nav className="float-tabs">
+            <button className={leftPanel === 'chat' ? 'on' : ''} onClick={() => setLeftPanel(leftPanel === 'chat' ? null : 'chat')}>
+              <span className="nav-ico"><ChatIcon />{(chatUnread > 0 || unread > 0) && <span className="nav-dot" />}</span>
+              Messages
+            </button>
+            <button className={leftPanel === 'meetings' ? 'on' : ''} onClick={() => setLeftPanel(leftPanel === 'meetings' ? null : 'meetings')}>
+              <span className="nav-ico"><MeetIcon />{meetDot && <span className="nav-dot" />}</span>
+              Meetings
+            </button>
+            <button className={mTeamsOpen ? 'on' : ''} onClick={() => setMTeamsOpen((v) => !v)}>
+              <TeamMark team={teams.find((t) => t.id === data.id) ?? { id: data.id, name: data.name, icon: data.icon }} size={18} />
+              Teams
+            </button>
+          </nav>
+          {mTeamsOpen && (
+            <div className="mobile-teams" onPointerDown={() => setMTeamsOpen(false)}>
+              <div className="mobile-teams-card" onPointerDown={(e) => e.stopPropagation()}>
+                {teams.map((t) => (
+                  <button key={t.id} className={t.id === data.id ? 'current' : ''}
+                    onClick={() => { setMTeamsOpen(false); if (t.id !== data.id) { switchTeam(t.id); setSelection(null); setSelectedPerson(null); } }}>
+                    <TeamMark team={t} /> <span>{t.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {pushState === 'ok-off' && (
+            <button className="pill push-banner" onClick={async () => setPushState((await enablePush()) === 'on' ? 'on' : 'ok-off')}>
+              Enable notifications
+            </button>
+          )}
+          {pushState === 'install' && (
+            <div className="push-banner note">For notifications: Share → Add to Home Screen, then open Exponential from there</div>
+          )}
+        </>
+      )}
       {saveError && <div className="toast error-toast">{saveError}</div>}
       {usageWarn && !usageDismissed && !saveError && data.moderators.includes(data.me) && (
         <div className={`toast usage-toast${usageWarn.pct >= 90 ? ' hot' : ''}`}>
@@ -1319,10 +1297,6 @@ function ChatIcon() {
       <path d="M6 4.5h12A2.5 2.5 0 0 1 20.5 7v6a2.5 2.5 0 0 1-2.5 2.5h-6.4L7.5 19v-3.5H6A2.5 2.5 0 0 1 3.5 13V7A2.5 2.5 0 0 1 6 4.5Z" />
     </svg>
   );
-}
-
-function WeekIcon() {
-  return <svg {...ICON}><rect x="3.5" y="5" width="17" height="15.5" rx="3.5" /><path d="M3.5 10.5h17M8.5 5.5V3m7 2.5V3" /></svg>;
 }
 
 function PlanIcon() {
