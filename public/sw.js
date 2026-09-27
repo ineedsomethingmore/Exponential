@@ -23,13 +23,16 @@ self.addEventListener('push', (e) => {
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   const chan = e.notification.data && e.notification.data.channelId;
-  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((cs) => {
+  const url = chan ? './?chat=' + encodeURIComponent(chan) : './';
+  e.waitUntil((async () => {
+    const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const c of cs) {
-      if ('focus' in c) {
+      try {
         if (chan) c.postMessage({ type: 'open-chat', channelId: chan });
-        return c.focus();
-      }
+        await c.focus();
+        return;
+      } catch { /* focus can fail on iOS — open a window instead */ }
     }
-    return self.clients.openWindow(chan ? './?chat=' + encodeURIComponent(chan) : './');
-  }));
+    await self.clients.openWindow(url);
+  })());
 });

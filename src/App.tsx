@@ -246,6 +246,7 @@ export default function App() {
       if (d?.type === 'open-chat' && d.channelId) openChat(d.channelId);
     };
     navigator.serviceWorker?.addEventListener('message', onMsg);
+    navigator.serviceWorker?.startMessages?.(); // without this, worker→page messages stay queued forever
     return () => navigator.serviceWorker?.removeEventListener('message', onMsg);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
