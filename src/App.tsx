@@ -185,6 +185,10 @@ export default function App() {
   const [googleUser, setGoogleUser] = useState<GoogleUser | null>(null);
   const [mTeamsOpen, setMTeamsOpen] = useState(false);
   const chatBackRef = useRef<(() => boolean) | null>(null);
+  // A tapped push notification's target conversation. Kept in a ref because the deep-link
+  // arrives at mount, BEFORE the team loads — the team-load chat reset used to wipe the
+  // chatActive it had set, so every cold start landed on the plan instead of the thread.
+  const pendingChatRef = useRef<{ id: string; at: number } | null>(null);
   const selRef = useRef<Selection | null>(null);
   selRef.current = selection;
   // iOS back-swipe must navigate INSIDE the app — the browser history behind it holds the
@@ -233,17 +237,21 @@ export default function App() {
   // postMessages a running window or opens ./?chat=<id> for a cold start.
   useEffect(() => {
     if (window.exponential) return;
-    const openChat = (id: string) => { setLeftPanel('chat'); setChatActive(id); setChatJump(true); };
+    const openChat = (id: string, src: string) => {
+      pendingChatRef.current = { id, at: Date.now() };
+      try { localStorage.setItem('exponential-link-log', `${src} ${new Date().toTimeString().slice(0, 8)}`); } catch { /* private mode */ }
+      setLeftPanel('chat'); setChatActive(id); setChatJump(true);
+    };
     const boot = new URLSearchParams(location.search).get('chat');
     if (boot) {
-      openChat(boot);
+      openChat(boot, 'url');
       const url = new URL(location.href);
       url.searchParams.delete('chat');
       history.replaceState(history.state, '', url.pathname + url.search + url.hash);
     }
     const onMsg = (e: MessageEvent) => {
       const d = e.data as { type?: string; channelId?: string } | null;
-      if (d?.type === 'open-chat' && d.channelId) openChat(d.channelId);
+      if (d?.type === 'open-chat' && d.channelId) openChat(d.channelId, 'msg');
     };
     navigator.serviceWorker?.addEventListener('message', onMsg);
     navigator.serviceWorker?.startMessages?.(); // without this, worker→page messages stay queued forever
@@ -256,8 +264,11 @@ export default function App() {
         const note = await store.match('./pending-chat');
         if (!note) return;
         await store.delete('./pending-chat');
-        const id = (await note.text()).trim();
-        if (id) openChat(id);
+        const raw = (await note.text()).trim();
+        let id = raw, at = 0;
+        try { const j = JSON.parse(raw) as { id?: string; at?: number }; id = j.id ?? ''; at = j.at ?? 0; } catch { /* pre-JSON note: the bare id */ }
+        // a note an old page never consumed shouldn't ghost-open a chat days later
+        if (id && (!at || Date.now() - at < 10 * 60_000)) openChat(id, 'note');
       } catch { /* cache unavailable (private mode etc.) */ }
     };
     consumePending();
@@ -466,7 +477,15 @@ export default function App() {
   const refreshChat = useCallback(() => {
     const d = { id: chatTeam, me: data?.me };
     if (!d.id || !d.me) return;
-    fetchChat(d.id, d.me, cloudMode).then((chs) => { setChat(chs); setChatActive((cur) => cur && chs.some((c) => c.id === cur) ? cur : chs[0]?.id ?? null); }).catch(() => {});
+    fetchChat(d.id, d.me, cloudMode).then((chs) => {
+      setChat(chs);
+      const want = pendingChatRef.current; // a push deep-link outlives the team-load reset below
+      if (want && Date.now() - want.at < 2 * 60_000 && chs.some((c) => c.id === want.id)) {
+        setLeftPanel('chat'); setChatActive(want.id); setChatJump(true);
+        return;
+      }
+      setChatActive((cur) => cur && chs.some((c) => c.id === cur) ? cur : chs[0]?.id ?? null);
+    }).catch(() => {});
   }, [chatTeam, data?.me, cloudMode]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setChat([]); setChatActive(null); refreshChat(); }, [chatTeam, cloudMode]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!chatTeam || !cloudMode) return; return subscribeChat(chatTeam, cloudMode); }, [chatTeam, cloudMode]);
@@ -1203,7 +1222,7 @@ export default function App() {
                   onClose={() => setLeftPanel(null)}
                   onError={(m) => { setSaveError(m); window.setTimeout(() => setSaveError(null), 6000); }}
                   jumpToThread={chatJump}
-                  onJumped={() => setChatJump(false)}
+                  onJumped={() => { setChatJump(false); pendingChatRef.current = null; }}
                   backRef={chatBackRef}
                 />
               )}
@@ -1299,6 +1318,9 @@ export default function App() {
                     <TeamMark team={t} /> <span>{t.name}</span>
                   </button>
                 ))}
+                <div className="mobile-build">
+                  {__BUILD__}{(() => { try { const l = localStorage.getItem('exponential-link-log'); return l ? ` · ${l}` : ''; } catch { return ''; } })()}
+                </div>
               </div>
             </div>
           )}

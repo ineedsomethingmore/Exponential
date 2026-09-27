@@ -1416,6 +1416,7 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 }
 .mobile-teams-card button.current { background: var(--ov-6); }
 .mobile-teams-card button span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mobile-build { padding: 4px 10px 2px; font-size: 10px; color: var(--text-3); opacity: 0.6; text-align: center; }
 .push-banner {
   position: fixed; left: 50%; transform: translateX(-50%);
   bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); z-index: 60; /* clear of the floating bar AND the Add-task fab */ /* clear of both the tab bar and the Add-task fab */
