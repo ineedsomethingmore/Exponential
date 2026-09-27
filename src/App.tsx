@@ -206,6 +206,29 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, [mobileShell]);
 
+  // Web self-update: the served version.json changes on every deploy; when it stops
+  // matching the running build, offer a one-tap refresh (the service worker fetches
+  // navigations network-first, so the reload really gets the new build). Checked on
+  // focus and every 15 minutes — no reinstall, no waiting for iOS to evict the page.
+  const [webUpdate, setWebUpdate] = useState(false);
+  useEffect(() => {
+    if (window.exponential) return; // Electron has its own updater
+    let stop = false;
+    const check = async () => {
+      try {
+        const r = await fetch('./version.json', { cache: 'no-store' });
+        if (!r.ok) return; // dev server has no version.json
+        const v = await r.json() as { build?: string };
+        if (!stop && v.build && v.build !== __BUILD__) setWebUpdate(true);
+      } catch { /* offline — try again later */ }
+    };
+    const t = window.setInterval(check, 15 * 60_000);
+    const vis = () => { if (!document.hidden) check(); };
+    document.addEventListener('visibilitychange', vis);
+    check();
+    return () => { stop = true; window.clearInterval(t); document.removeEventListener('visibilitychange', vis); };
+  }, []);
+
   // Kill Safari's edge-swipe navigation OUTRIGHT: the gesture only starts when a touch
   // BEGINS in the screen-edge bezel, and preventDefault on that touchstart stops it cold.
   // preventDefault also swallows the tap's synthesized click, so a still tap in the strip
@@ -1181,6 +1204,9 @@ export default function App() {
         </div>
       </div>
 
+      {!window.exponential && webUpdate && (
+        <button className="web-update" onClick={() => window.location.reload()}>Update ready — tap to refresh</button>
+      )}
       {mobileShell && (
         <>
           <nav className="float-tabs">
