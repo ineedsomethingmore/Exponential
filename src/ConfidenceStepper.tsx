@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { appIdle, onAppWake } from './idle';
 
 /**
  * Confidence as a stepper: − and + around a big number, 0–10. The signal is a
@@ -64,14 +65,32 @@ export function ConfidenceStepper({ value, onChange, readOnly }: {
     // start with a field already in flight, not an empty screen filling up
     if (!stars.current.length) for (let i = 0; i < 20; i++) stars.current.push({ ...spawn(Math.random() * c.width, c.height), life: 1 });
 
+    // The loop PARKS instead of running forever: it stops outright while the box is scrolled
+    // out of view or the window has sat unfocused for a minute (the transparent mac window
+    // never reports occlusion, so this is the only "nobody is watching" signal we get), and
+    // it draws at 30fps — plenty for streaks, half the burn, and it no longer starves the
+    // master-plan pan of frame time.
     let raf = 0;
-    const step = () => {
+    let dead = false;
+    let last = 0;
+    let onScreen = true;
+    const start = () => { if (!dead && !raf) raf = requestAnimationFrame(step); };
+    const park = () => { c.getContext('2d')?.clearRect(0, 0, c.width, c.height); };
+    const step = (ts: number) => {
+      raf = 0;
+      if (dead) return;
+      if (!onScreen || appIdle()) { park(); return; } // wake/scroll restarts us
+      if (ts - last < 31) { start(); return; }
+      // motion is normalized to TIME (120Hz frame units — the speed the effect was tuned
+      // at), so drawing at 30fps keeps the same perceived velocity, just fewer samples
+      const dt = last ? Math.min(6, (ts - last) / 8.33) : 1;
+      last = ts;
       const ctx = c.getContext('2d')!;
       const W = c.width, H = c.height;
       const hyper = hyperRef.current;
       const t = intRef.current;
       // every level from 7 up is a big jump: far denser, faster, longer
-      for (let i = 0; i < 1 + Math.round(t * 3); i++) {
+      for (let i = 0; i < Math.round((1 + Math.round(t * 3)) * dt); i++) {
         if (stars.current.length < 12 + t * 45 && Math.random() < 0.7) stars.current.push(spawn(W + Math.random() * 40, H));
       }
       ctx.clearRect(0, 0, W, H);
@@ -82,9 +101,9 @@ export function ConfidenceStepper({ value, onChange, readOnly }: {
       const tailCol = hyper ? '110, 170, 255' : '80, 205, 115';
       stars.current = stars.current.filter((s) => s.x + s.len + s.speed * 8 > -10);
       for (const s of stars.current) {
-        s.x -= s.speed * (1 + t * 2.4);
-        s.speed = Math.min(13, s.speed * (1.008 + t * 0.01)); // ever accelerating = warp
-        s.life = Math.min(1, s.life + 0.08);
+        s.x -= s.speed * (1 + t * 2.4) * dt;
+        s.speed = Math.min(13, s.speed * Math.pow(1.008 + t * 0.01, dt)); // ever accelerating = warp
+        s.life = Math.min(1, s.life + 0.08 * dt);
         const len = (s.len + s.speed * 2.2) * (1 + t * 2.6); // higher score = much longer streaks
         const head = s.x, tail = s.x + len;
         // gentle fade over ~15% of the box at BOTH ends, and toward top/bottom — nothing clips
@@ -105,10 +124,13 @@ export function ConfidenceStepper({ value, onChange, readOnly }: {
         ctx.lineTo(head + headLen, s.y);
         ctx.stroke();
       }
-      raf = requestAnimationFrame(step);
+      start();
     };
-    raf = requestAnimationFrame(step);
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+    start();
+    const io = new IntersectionObserver((es) => { const e = es[es.length - 1]; onScreen = e.isIntersecting; if (e.isIntersecting) start(); }); // newest entry — a batched out-then-in must land on IN
+    io.observe(c);
+    const offWake = onAppWake(start);
+    return () => { dead = true; if (raf) cancelAnimationFrame(raf); ro.disconnect(); io.disconnect(); offWake(); };
   }, [warp]);
 
   const danger = rated && v <= 3;

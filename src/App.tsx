@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { BigPlan } from './BigPlan';
 import { Avatar, WeekPlan } from './WeekPlan';
 import { DetailPanel, type Selection } from './DetailPanel';
+import { appIdle, onAppWake } from './idle';
 import { TeamPage } from './TeamPage';
 import logoUrl from '../build/icon.png';
 import utopiaUrl from '../build/utopia.svg';
@@ -20,11 +21,82 @@ import { subscribeMeetings } from './meetings';
 
 /** Layout proportions, remembered per machine (not part of the shared plan data). */
 const PREFS_KEY = 'exponential-layout';
-const DEFAULT_PREFS = { weekH: 400, detailW: 415, theme: '' as '' | 'light' | 'dark', calendar: true, allTeams: false, sideOpen: false };
+const DEFAULT_PREFS = { weekH: 400, detailW: 415, theme: '' as '' | 'light' | 'dark', calendar: true, allTeams: false };
 const prefs: typeof DEFAULT_PREFS = (() => {
   try { return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}') }; } catch { return DEFAULT_PREFS; }
 })();
 const savePrefs = (p: typeof DEFAULT_PREFS) => localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+
+/* ── render-storm control ─────────────────────────────────────────────────────
+   The planners used to re-render on EVERY App render — a chat ping, a calendar refresh,
+   a realtime reload each re-did the lanes math and repainted the whole window. They are
+   memo()d with a comparator that IGNORES function props: App recreates its handler
+   closures every render, and comparing them would defeat the memo entirely.
+   THE CONTRACT that makes skipping safe: any state a planner handler reads must ALSO
+   reach that planner as a non-function prop (or be a ref / setState setter) — then every
+   change that could matter re-renders the planner and refreshes its closures. A handler
+   that closes over state with no matching data prop WILL go stale. */
+const skipFnProps = (a: Record<string, unknown>, b: Record<string, unknown>) => {
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    const x = a[k], y = b[k];
+    if (typeof x === 'function' && typeof y === 'function') continue;
+    if (!Object.is(x, y)) return false;
+  }
+  return true;
+};
+const BigPlanM = memo(BigPlan, skipFnProps);
+const WeekPlanM = memo(WeekPlan, skipFnProps);
+const DetailPanelM = memo(DetailPanel, skipFnProps);
+
+/* Identity caches for derived props (hook-free — some sit below App's early returns,
+   where useMemo is illegal). Same inputs → the SAME object, so the memo()s above hold. */
+const memo1 = <A extends unknown[], R>(fn: (...a: A) => R) => {
+  let key: A | null = null; let val: R;
+  return (...a: A): R => {
+    if (!key || key.length !== a.length || a.some((x, i) => !Object.is(x, key![i]))) { key = a as A; val = fn(...a); }
+    return val;
+  };
+};
+const liveOf = memo1((d: Data) => ({ ...d, projects: d.projects.filter((p) => !p.deletedAt), tasks: d.tasks.filter((t) => !t.deletedAt) }));
+const groupsOf = memo1((g: Group[] | undefined) => g ?? []);
+const notifsOf = memo1((n: Data['notifications'] | undefined) => n ?? []);
+const weekTasksOf = memo1((tasks: Task[], fTasks: Task[] | null, person: string, week: ISODate) =>
+  [...tasks, ...(fTasks?.filter((t) => t.personId === person) ?? [])]
+    .filter((t) => (t.personId === person || (t.reviewerId === person && (t.status === 'review' || t.reviewDone))) && (!t.date || (t.date <= addDays(week, 6) && (t.end ?? t.date) >= week))));
+const allTeamsOf = memo1((enabled: boolean, on: boolean, set: (f: (v: boolean) => boolean) => void) =>
+  enabled ? { on, toggle: () => set((v) => !v) } : undefined);
+const foreignOf = memo1((foreignTeams: Map<string, Data> | null, currentId: string | undefined, teams: { id: string; name: string; icon?: string | null }[]) => {
+  if (!foreignTeams) return null;
+  const tasks: Task[] = [];
+  const badge = new Map<string, { id: string; name: string; icon?: string }>();
+  const teamOf = new Map<string, string>();
+  for (const [tid, fd] of foreignTeams) {
+    if (tid === currentId) continue; // just switched here: its tasks are the LIVE ones now (the refetch hasn't caught up yet)
+    const info = teams.find((t) => t.id === tid);
+    for (const t of fd.tasks) {
+      if (t.deletedAt) continue;
+      tasks.push(t);
+      badge.set(t.id, { id: tid, name: info?.name ?? fd.name, icon: info?.icon ?? fd.icon ?? undefined });
+      teamOf.set(t.id, tid);
+    }
+  }
+  return { tasks, badge, teamOf };
+});
+const NO_EVENTS: CalendarEvent[] = []; // a fresh `?? []` every render would defeat the caches below
+const calendarOf = memo1((enabled: boolean, available: boolean, hidden: boolean, events: CalendarEvent[], note: string | undefined, reauth: boolean, onReauth: () => void) =>
+  ({ enabled, available, hidden, events, note, onReauth: reauth ? onReauth : undefined }));
+const carriedOf = memo1((retros: Data['retros'], monday: string | null) => {
+  if (monday === null) return undefined;
+  // OKR scores roll forward: a new week starts where the last one left off
+  const m: Record<string, number> = {};
+  for (const w of Object.keys(retros ?? {}).sort()) {
+    if (w >= monday) break;
+    Object.assign(m, retros![w].answers.confidence ?? {});
+  }
+  return m;
+});
 
 // The splash shader starts on its clean frame and sweeps its stripes once per cycle;
 // the splash holds for whole cycles so it always exits right as the stripes clear.
@@ -48,7 +120,6 @@ export default function App() {
   // chat / meetings live in a LEFT side panel; both sides can be open at once — every
   // column (left panel, planners, right panel) keeps at least ~a fifth of the window.
   const [leftPanel, setLeftPanel] = useState<'chat' | 'meetings' | null>(null);
-  const [sideOpen, setSideOpen] = useState(() => prefs.sideOpen); // sidebar toggled wide (was hover-expand)
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 700px)').matches);
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 700px)');
@@ -62,7 +133,7 @@ export default function App() {
   const leftWRef = useRef(leftW); leftWRef.current = leftW;
   // The centre (planners) always keeps at least a third of the window; the two side
   // panels split what's left, each at least ~a fifth (never less than 240px).
-  const sideBudget = () => window.innerWidth - (sideOpen ? 250 : 106) - Math.floor(window.innerWidth / 3); // 106/250 = closed/open sidebar + shell padding + slot margins, measured
+  const sideBudget = () => window.innerWidth - 106 - Math.floor(window.innerWidth / 3); // 106 = sidebar + shell padding + slot margins, measured (hover-expand overlaps briefly, no re-clamp)
   const minPanelW = () => Math.max(240, Math.min(Math.floor(window.innerWidth / 5), Math.floor((sideBudget() - 28) / 2)));
   const onLResizeDown = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -143,7 +214,7 @@ export default function App() {
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   const [calendarOn, setCalendarOn] = useState(() => prefs.calendar);
   const [allTeamsOn, setAllTeamsOn] = useState(() => prefs.allTeams);
-  useEffect(() => { savePrefs({ weekH, detailW, theme: themePref, calendar: calendarOn, allTeams: allTeamsOn, sideOpen }); }, [weekH, detailW, themePref, calendarOn, allTeamsOn, sideOpen]);
+  useEffect(() => { savePrefs({ weekH, detailW, theme: themePref, calendar: calendarOn, allTeams: allTeamsOn }); }, [weekH, detailW, themePref, calendarOn, allTeamsOn]);
   const [vResizing, setVResizing] = useState(false);
 
   const detailWRef = useRef(detailW); detailWRef.current = detailW;
@@ -173,7 +244,7 @@ export default function App() {
     fit();
     window.addEventListener('resize', fit);
     return () => window.removeEventListener('resize', fit);
-  }, [leftPanel, selection?.kind, sideOpen, mobileShell]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [leftPanel, selection?.kind, mobileShell]); // eslint-disable-line react-hooks/exhaustive-deps
   const mainRef = useRef<HTMLDivElement>(null);
 
   // Launch splash: the mark slides in from the bottom, plays at least one full shader sweep,
@@ -646,28 +717,19 @@ export default function App() {
       setForeignTeams(m);
     };
     fetchAll();
-    const subs = others.map((t) => subscribeTeam(t.id, me, () => fetchOne(t.id)));
-    const onFocus = () => { if (Date.now() - lastFetch > 300_000) fetchAll(); }; // realtime can drop while the machine sleeps
+    const stale = new Set<string>(); // teams whose edits arrived while nobody was looking — drained per team on focus
+    const subs = others.map((t) => subscribeTeam(t.id, me, () => {
+      if (document.visibilityState === 'hidden' || appIdle()) { stale.add(t.id); return; }
+      fetchOne(t.id);
+    }));
+    const onFocus = () => {
+      if (stale.size) { for (const tid of stale) fetchOne(tid); stale.clear(); }
+      else if (Date.now() - lastFetch > 300_000) fetchAll(); // realtime can drop while the machine sleeps
+    };
     window.addEventListener('focus', onFocus);
     return () => { dead = true; subs.forEach((off) => off()); window.removeEventListener('focus', onFocus); };
   }, [allTeamsOn, cloudMode, data?.id, data?.me, teamIds]); // eslint-disable-line react-hooks/exhaustive-deps
-  const foreign = (() => {
-    if (!foreignTeams) return null;
-    const tasks: Task[] = [];
-    const badge = new Map<string, { id: string; name: string; icon?: string }>();
-    const teamOf = new Map<string, string>();
-    for (const [tid, fd] of foreignTeams) {
-      if (tid === data?.id) continue; // just switched here: its tasks are the LIVE ones now (the refetch hasn't caught up yet)
-      const info = teams.find((t) => t.id === tid);
-      for (const t of fd.tasks) {
-        if (t.deletedAt) continue;
-        tasks.push(t);
-        badge.set(t.id, { id: tid, name: info?.name ?? fd.name, icon: info?.icon ?? fd.icon ?? undefined });
-        teamOf.set(t.id, tid);
-      }
-    }
-    return { tasks, badge, teamOf };
-  })();
+  const foreign = foreignOf(foreignTeams, data?.id, teams);
   /** Apply a taskOp to the foreign team that holds the task and persist it there. Returns false when the task isn't foreign. */
   const foreignOp = (taskId: string, fn: (d: Data) => Data): boolean => {
     const tid = foreign?.teamOf.get(taskId);
@@ -683,12 +745,9 @@ export default function App() {
   };
 
   // The visible calendar refreshes quietly once a minute; the cache bridges the gaps.
+  // calTick only bumps on a manual reconnect now — the minutely refresh lives inside the
+  // fetch effect below and re-renders NOTHING unless the events actually changed.
   const [calTick, setCalTick] = useState(0);
-  useEffect(() => {
-    if (!calendarOn || !googleUser) return;
-    const iv = window.setInterval(() => setCalTick((t) => t + 1), 60_000);
-    return () => window.clearInterval(iv);
-  }, [calendarOn, googleUser]);
 
   // Fetch the selected person's calendar for the visible week (silently when already cached).
   const calEventsRef = useRef(calEvents);
@@ -704,8 +763,13 @@ export default function App() {
     const key = `${calendarId}|${week}`;
     if (!calEventsRef.current[key]) setCalNote('Loading…'); // first look shows a note; refreshes are invisible
     let cancelled = false;
-    window.exponential.google.events(calendarId, week, addDays(week, 6))
-      .then((ev) => { if (!cancelled) { setCalEvents((c) => ({ ...c, [key]: ev })); setCalNote(undefined); setCalReauth(false); } })
+    const load = () => window.exponential!.google.events(calendarId, week, addDays(week, 6))
+      .then((ev) => {
+        if (cancelled) return;
+        // identical events keep the SAME object, so a quiet refresh re-renders nothing
+        setCalEvents((c) => (JSON.stringify(c[key]) === JSON.stringify(ev) ? c : { ...c, [key]: ev }));
+        setCalNote(undefined); setCalReauth(false);
+      })
       .catch((err: Error) => {
         if (cancelled) return;
         // My own calendar failing auth-wise = the grant was revoked or expired: offer to reconnect.
@@ -715,10 +779,14 @@ export default function App() {
         } else setCalNote(/404|403/.test(err.message) ? 'Calendar not shared with you' : err.message);
         setCalEvents((c) => (c[key] ? c : { ...c, [key]: [] })); // keep the last good events on a failed refresh
       });
-    return () => { cancelled = true; };
+    load();
+    // minutely refresh, parked while the window sits unfocused/hidden; wake refreshes at once
+    const iv = window.setInterval(() => { if (!appIdle() && document.visibilityState !== 'hidden') load(); }, 60_000);
+    const offWake = onAppWake(load);
+    return () => { cancelled = true; window.clearInterval(iv); offWake(); };
   }, [!!data, calendarOn, googleUser, person, week, calTick]); // eslint-disable-line react-hooks/exhaustive-deps
   const [calReauth, setCalReauth] = useState(false);
-  const reauthCalendar = async () => {
+  const reauthCalendar = useCallback(async () => {
     const g = window.exponential?.google;
     if (!g) return;
     setCalNote('Waiting for Google in your browser…');
@@ -727,7 +795,7 @@ export default function App() {
     setCalReauth(false);
     setCalEvents({});
     setCalTick((t) => t + 1);
-  };
+  }, []);
 
   // Five minutes before one of my meetings a system notification fires. Today's own
   // calendar refreshes every 10 minutes; the countdown check runs every 30 seconds.
@@ -738,7 +806,9 @@ export default function App() {
     const load = () => {
       const day = todayISO();
       window.exponential!.google.events('primary', day, day)
-        .then((ev) => { if (!dead) setMyToday(ev); })
+        // unchanged events keep the same array — no 10-minute whole-app re-render.
+        // NOT gated on focus: the 5-minute reminder matters most while you work elsewhere.
+        .then((ev) => { if (!dead) setMyToday((old) => (JSON.stringify(old) === JSON.stringify(ev) ? old : ev)); })
         .catch(() => {});
     };
     load();
@@ -882,7 +952,7 @@ export default function App() {
   const isThisWeek = week === weekStart(today);
   const me = data.people.find((p) => p.id === data.me)!;
   // Everything the planners render comes from `live`; soft-deleted rows stay only in `data` (for the trash).
-  const live = { ...data, projects: data.projects.filter((p) => !p.deletedAt), tasks: data.tasks.filter((t) => !t.deletedAt) };
+  const live = liveOf(data); // identity-cached: same data → the SAME object, so the planner memos hold
   const selProject = selection?.kind === 'project' ? live.projects.find((p) => p.id === selection.id) : undefined;
   const selTask = selection?.kind === 'task' ? live.tasks.find((t) => t.id === selection.id) : undefined;
   const selDeadline = selection?.kind === 'deadline' ? data.deadlines.find((d) => d.id === selection.id) : undefined;
@@ -897,9 +967,9 @@ export default function App() {
   // The planner elements are SHARED between the desktop shell and the phone shell:
   // same props, same handlers — only the frame around them differs.
   const bigPlanEl = (
-            <BigPlan
+            <BigPlanM
               projects={live.projects}
-              groups={data.groups ?? []}
+              groups={groupsOf(data.groups)}
               deadlines={data.deadlines}
               people={data.people}
               locked={!unlocked || mobileShell}
@@ -966,17 +1036,16 @@ export default function App() {
             />
   );
   const weekPlanEl = (
-            <WeekPlan
+            <WeekPlanM
               people={data.people}
               me={data.me}
               selected={person}
               onSelect={setSelectedPerson}
               week={week}
               today={today}
-              tasks={[...live.tasks, ...(foreign?.tasks.filter((t) => t.personId === person) ?? [])]
-                .filter((t) => (t.personId === person || (t.reviewerId === person && (t.status === 'review' || t.reviewDone))) && (!t.date || (t.date <= addDays(week, 6) && (t.end ?? t.date) >= week)))}
+              tasks={weekTasksOf(live.tasks, foreign?.tasks ?? null, person, week)}
               teamBadge={foreign && data ? (id) => foreign.badge.get(id) ?? { id: data.id, name: data.name, icon: data.icon ?? undefined } : undefined}
-              allTeams={cloudMode && teams.length > 1 ? { on: allTeamsOn, toggle: () => setAllTeamsOn((v) => !v) } : undefined}
+              allTeams={allTeamsOf(cloudMode && teams.length > 1, allTeamsOn, setAllTeamsOn)}
               selectedId={selection?.id}
               selectedIds={multi}
               onToggleSelect={toggleSelect}
@@ -1030,14 +1099,15 @@ export default function App() {
                 else open('task', t.id);
               }}
               onReorder={(id, afterId) => { if (!foreignOp(id, (d) => reorderTask(d, id, afterId))) update((d) => reorderTask(d, id, afterId)); }}
-              calendar={{
-                enabled: calendarOn,
-                available: !!googleUser,
-                hidden: !window.exponential, // the web build has no Google Calendar at all
-                events: calEvents[calKey] ?? [],
-                note: !window.exponential ? 'Available in the desktop app' : !googleUser ? 'Sign in with Google to see events' : calNote,
-                onReauth: calReauth ? reauthCalendar : undefined,
-              }}
+              calendar={calendarOf(
+                calendarOn,
+                !!googleUser,
+                !window.exponential, // the web build has no Google Calendar at all
+                calEvents[calKey] ?? NO_EVENTS,
+                !window.exponential ? 'Available in the desktop app' : !googleUser ? 'Sign in with Google to see events' : calNote,
+                calReauth,
+                reauthCalendar,
+              )}
               onToggleCalendar={async () => {
                 if (calendarOn) { setCalendarOn(false); return; }
                 // First use: Google may not have granted calendar access with the sign-in; ask for it now.
@@ -1053,7 +1123,7 @@ export default function App() {
             />
   );
   const detailEl = (w: number) => (selection ? (
-          <DetailPanel
+          <DetailPanelM
             width={w}
             selection={selection}
             project={selProject}
@@ -1061,17 +1131,9 @@ export default function App() {
             deadline={selDeadline}
             retro={selection.kind === 'retro' ? data.retros?.[selection.id] : undefined}
             prevRetro={selection.kind === 'retro' ? data.retros?.[addDays(selection.id, -7)] : undefined}
-            carriedConfidence={selection.kind === 'retro' ? (() => {
-              // OKR scores roll forward: a new week starts where the last one left off
-              const m: Record<string, number> = {};
-              for (const w of Object.keys(data.retros ?? {}).sort()) {
-                if (w >= selection.id) break;
-                Object.assign(m, data.retros![w].answers.confidence ?? {});
-              }
-              return m;
-            })() : undefined}
+            carriedConfidence={carriedOf(data.retros, selection.kind === 'retro' ? selection.id : null)}
             retroTemplate={data.retroTemplate}
-            notifications={data.notifications ?? []}
+            notifications={notifsOf(data.notifications)}
             people={data.people}
             me={data.me}
             onClose={() => setSelection(null)}
@@ -1087,7 +1149,7 @@ export default function App() {
             onUnclaimTask={(id) => update((d) => unclaimTask(d, id))}
             onMarkRead={(ids) => update((d) => ({ ...d, notifications: (d.notifications ?? []).map((n) => (ids.includes(n.id) ? { ...n, read: true } : n)) }), 'mark-read')}
             onUpdateProject={updateProject}
-            groups={data.groups ?? []}
+            groups={groupsOf(data.groups)}
             onNewGroup={() => { setEditGroup(null); setSheet('group'); }}
             onToggleAssignee={(pid, who) => {
               const cur = data.projects.find((x) => x.id === pid)?.assignees ?? [];
@@ -1118,7 +1180,7 @@ export default function App() {
 
   return (
     <div className={`shell${mobileShell ? ' phone' : ''}`}>
-      <aside className={`sidebar${window.exponential?.platform === 'darwin' ? ' mac' : ''}${sideOpen ? ' open' : ''}`}>
+      <aside className={`sidebar${window.exponential?.platform === 'darwin' ? ' mac' : ''}`}>
        <div className="sidebar-inner">
         <div className="team-list">
           {teams.map((t) => (
@@ -1149,11 +1211,6 @@ export default function App() {
         </button>
 
         <div className="sidebar-bottom">
-          <button className="nav-item theme-toggle" onClick={() => setSideOpen((v) => !v)}
-            title={sideOpen ? 'Collapse the sidebar' : 'Expand the sidebar'}>
-            <PanelIcon open={sideOpen} />
-            <span className="nav-text">Collapse</span>
-          </button>
           {(!updateInfo || updateInfo.state === 'none' || updateInfo.state === 'error' || updateInfo.state === 'available') && (
             <button
               className="nav-item theme-toggle"
@@ -1386,16 +1443,6 @@ export function TeamMark({ team, size = 30 }: { team: { name: string; icon?: str
 }
 
 const ICON = { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
-
-function PanelIcon({ open }: { open: boolean }) {
-  return (
-    <svg {...ICON}>
-      <rect x="3" y="4.5" width="18" height="15" rx="3.5" />
-      <path d="M9.5 4.5v15" />
-      {open ? <path d="M16.5 9.5 14 12l2.5 2.5" /> : <path d="M14 9.5l2.5 2.5L14 14.5" />}
-    </svg>
-  );
-}
 
 function MeetIcon() {
   return (

@@ -60,8 +60,12 @@ export default function Widget() {
   const [calTick, setCalTick] = useState(0);
   useEffect(() => {
     if (!calOn) return;
-    const iv = window.setInterval(() => setCalTick((t) => t + 1), 60_000);
-    return () => window.clearInterval(iv);
+    // the widget pre-loads hidden and lives all day — don't poll Google for a popover
+    // nobody can see; becoming visible (popover open) refreshes immediately instead
+    const tick = () => { if (document.visibilityState !== 'hidden') setCalTick((t) => t + 1); };
+    const iv = window.setInterval(tick, 60_000);
+    document.addEventListener('visibilitychange', tick);
+    return () => { window.clearInterval(iv); document.removeEventListener('visibilitychange', tick); };
   }, [calOn]);
   useEffect(() => {
     const g = window.exponential?.google;

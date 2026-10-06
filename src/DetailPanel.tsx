@@ -201,11 +201,11 @@ export function DetailPanel(p: Props) {
   );
 }
 
-/** The 8-layer progressive gradient blur (radius doubles toward the panel edge). */
+/** Progressive gradient blur toward the panel edge — 3 surfaces (::before, one div, ::after). */
 function GBlur({ pos }: { pos: 'top' | 'bottom' }) {
   return (
     <div className={`gblur ${pos}`} aria-hidden>
-      <div /><div /><div /><div /><div /><div />
+      <div />
     </div>
   );
 }

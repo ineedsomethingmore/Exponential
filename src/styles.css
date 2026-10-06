@@ -114,7 +114,7 @@ img { display: block; -webkit-user-drag: none; }
   width: 88px; flex: none; position: relative; z-index: 200; -webkit-app-region: drag;
   transition: width 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.sidebar.open { width: 232px; } /* toggled via the rail button; expands in the layout, squeezing the panels beside it */
+.sidebar:hover { width: 232px; } /* expands in the layout, squeezing the panels beside it */
 .sidebar * { -webkit-app-region: no-drag; }
 .sidebar-inner {
   position: absolute; top: 0; bottom: 0; left: 0; right: 0; display: flex; flex-direction: column;
@@ -122,7 +122,7 @@ img { display: block; -webkit-user-drag: none; }
 }
 .sidebar.mac .sidebar-inner { padding-top: 14px; }
 .nav-text, .team-name, .badge { opacity: 0; transition: opacity 0.15s; white-space: nowrap; }
-.sidebar.open .nav-text, .sidebar.open .team-name, .sidebar.open .badge { opacity: 1; transition-delay: 0.08s; }
+.sidebar:hover .nav-text, .sidebar:hover .team-name, .sidebar:hover .badge { opacity: 1; transition-delay: 0.08s; }
 
 .team-list { padding: 0; margin-bottom: 18px; display: flex; flex-direction: column; gap: 2px; }
 .sidebar.mac .team-list { padding-top: 26px; } /* room for the window's traffic lights */
@@ -131,14 +131,14 @@ img { display: block; -webkit-user-drag: none; }
 .team-row.current { background: var(--ov-6); }
 .team-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; padding: 7px 7px; text-align: left; border-radius: 14px; }
 .team-row.add { display: none; }
-.sidebar.open .team-list:hover .team-row.add { display: flex; } /* hover only: focus-within lingered on the cog */
+.sidebar:hover .team-list:hover .team-row.add { display: flex; } /* hover only: focus-within lingered on the cog */
 .team-row.add { padding: 7px 7px; gap: 10px; color: var(--text-3); }
 .team-row.add:hover { color: var(--text-2); }
 .team-cog {
   width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; color: var(--text-3); margin-right: 6px; flex: none;
   opacity: 0; transition: opacity 0.15s, background 0.15s, color 0.15s;
 }
-.sidebar.open .team-row:hover .team-cog, .sidebar.open .team-cog.on { opacity: 1; }
+.sidebar:hover .team-row:hover .team-cog, .sidebar:hover .team-cog.on { opacity: 1; }
 .team-cog:hover { background: var(--ov-6); color: var(--text); }
 .team-cog.on { color: var(--text); }
 .team-mark { width: 30px; height: 30px; border-radius: 10px; background: var(--text); color: var(--bg); box-shadow: 0 0 0 1px var(--line); display: grid; place-items: center; font-weight: 800; font-size: 15px; flex: none; }
@@ -179,7 +179,10 @@ img { display: block; -webkit-user-drag: none; }
 .planners { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
 .panel {
-  background: var(--frost); -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px);
+  /* no backdrop-filter: #root is opaque (var(--bg)), so blur(30) over that flat ground was
+     invisible — yet it made the two biggest surfaces in the window live GPU filters that
+     re-ran on every repaint underneath. Menus/sheets keep theirs: they overlap real content. */
+  background: var(--frost);
   border-radius: var(--radius-xl); box-shadow: 0 0 0 1.5px var(--edge), var(--shadow);
   display: flex; flex-direction: column; min-height: 120px; overflow: hidden; position: relative;
 }
@@ -300,7 +303,10 @@ img { display: block; -webkit-user-drag: none; }
 .tl-project {
   position: absolute; height: 26px; display: flex; align-items: center; gap: 10px;
   border-radius: 999px; padding: 0 12px; font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden;
-  background: var(--frost); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); color: var(--text);
+  /* no blur: a per-bar backdrop-filter made EVERY bar a live filter surface — dozens of GPU
+     re-filters on every pan frame, for a glass effect nobody could see over the flat panel.
+     --frost keeps the exact fill tone (opaque in light; 0.85 alpha composites the same). */
+  background: var(--frost); color: var(--text);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pc) 52%, var(--tint)), 0 0 0 0.5px var(--rim), 0 2px 8px rgba(0, 0, 0, 0.06);
   transition: box-shadow 0.15s, background 0.15s;
   z-index: 2;
@@ -391,7 +397,7 @@ img { display: block; -webkit-user-drag: none; }
   position: absolute; top: 5px; bottom: 5px; width: calc(100% / 7 - 6px); margin-left: 3px;
   border-radius: 999px; display: flex; align-items: center; padding: 0 10px; font-size: 12px; font-weight: 600;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  background: var(--frost); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  background: var(--frost); /* no blur — same reasoning as .tl-project */
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sc) 58%, var(--tint)), 0 0 0 0.5px var(--rim), 0 2px 6px rgba(0, 0, 0, 0.05);
   transition: left 0.12s ease-out, box-shadow 0.15s;
 }
@@ -488,7 +494,7 @@ img { display: block; -webkit-user-drag: none; }
 /* ─── Detail panel ──────────────────────────────────── */
 
 .detail {
-  flex: none; background: var(--frost); -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px);
+  flex: none; background: var(--frost); /* no backdrop-filter — same reasoning as .panel */
   border-radius: var(--radius-xl); box-shadow: 0 0 0 1.5px var(--edge), var(--shadow);
   display: flex; flex-direction: column; overflow: hidden; animation: fade 0.25s ease-out; position: relative;
 }
@@ -508,32 +514,24 @@ img { display: block; -webkit-user-drag: none; }
   pointer-events: none; background: linear-gradient(to bottom, transparent, var(--veil) 78%);
 }
 .gblur > div, .gblur::before, .gblur::after { content: ''; position: absolute; inset: 0; }
-.gblur.top::before, .gblur.top > div, .gblur.top::after { --dir: to top; }
-.gblur.bottom::before, .gblur.bottom > div, .gblur.bottom::after { --dir: to bottom; }
-.gblur::before { z-index: 1; -webkit-backdrop-filter: blur(0.5px); backdrop-filter: blur(0.5px);
-  -webkit-mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 0%, #000 10%, #000 20%, rgba(0,0,0,0) 30%);
-  mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 0%, #000 10%, #000 20%, rgba(0,0,0,0) 30%); }
-.gblur > div:nth-of-type(1) { z-index: 2; -webkit-backdrop-filter: blur(1px); backdrop-filter: blur(1px);
-  -webkit-mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 15%, #000 25%, #000 35%, rgba(0,0,0,0) 45%);
-  mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 15%, #000 25%, #000 35%, rgba(0,0,0,0) 45%); }
-.gblur > div:nth-of-type(2) { z-index: 3; -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
-  -webkit-mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 30%, #000 40%, #000 50%, rgba(0,0,0,0) 60%);
-  mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 30%, #000 40%, #000 50%, rgba(0,0,0,0) 60%); }
-.gblur > div:nth-of-type(3) { z-index: 4; -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
-  -webkit-mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 45%, #000 55%, #000 65%, rgba(0,0,0,0) 75%);
-  mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 45%, #000 55%, #000 65%, rgba(0,0,0,0) 75%); }
-.gblur > div:nth-of-type(4) { z-index: 5; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
-  -webkit-mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 57.5%, #000 67.5%, #000 77.5%, rgba(0,0,0,0) 87.5%);
-  mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 57.5%, #000 67.5%, #000 77.5%, rgba(0,0,0,0) 87.5%); }
-.gblur > div:nth-of-type(5) { z-index: 6; -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
-  -webkit-mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 70%, #000 80%, #000 90%, rgba(0,0,0,0) 100%);
-  mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 70%, #000 80%, #000 90%, rgba(0,0,0,0) 100%); }
-.gblur > div:nth-of-type(6) { z-index: 7; -webkit-backdrop-filter: blur(32px); backdrop-filter: blur(32px);
-  -webkit-mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 82.5%, #000 92.5%, #000 100%);
-  mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 82.5%, #000 92.5%, #000 100%); }
-.gblur::after { z-index: 8; -webkit-backdrop-filter: blur(64px); backdrop-filter: blur(64px);
-  -webkit-mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 90%, #000 100%);
-  mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 90%, #000 100%); }
+/* The panel is no longer a backdrop root (its blur(30) is gone), so these surfaces now
+   sample against the page root — and a backdrop-filter clips to its OWN border-box, not
+   the panel's rounded overflow. Round the surfaces themselves or their square corners
+   poke past the panel's corners. */
+.gblur.top::before, .gblur.top > div, .gblur.top::after { --dir: to top; border-radius: var(--radius-xl) var(--radius-xl) 0 0; }
+.gblur.bottom::before, .gblur.bottom > div, .gblur.bottom::after { --dir: to bottom; border-radius: 0 0 var(--radius-xl) var(--radius-xl); }
+/* 3 surfaces, not 8: each masked backdrop-filter layer is a live GPU re-filter on every
+   repaint beneath it, and the side panel keeps these mounted the whole time it's open.
+   Three overlapping radii read the same at a 22-130px strip. */
+.gblur::before { z-index: 1; -webkit-backdrop-filter: blur(1.5px); backdrop-filter: blur(1.5px);
+  -webkit-mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 0%, #000 18%, #000 30%, rgba(0,0,0,0) 48%);
+  mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 0%, #000 18%, #000 30%, rgba(0,0,0,0) 48%); }
+.gblur > div { z-index: 2; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  -webkit-mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 30%, #000 48%, #000 62%, rgba(0,0,0,0) 80%);
+  mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 30%, #000 48%, #000 62%, rgba(0,0,0,0) 80%); }
+.gblur::after { z-index: 3; -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
+  -webkit-mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 62%, #000 86%, #000 100%);
+  mask-image: linear-gradient(var(--dir), rgba(0,0,0,0) 62%, #000 86%, #000 100%); }
 
 /* while the formatting toolbar is stuck it lives INSIDE this bar's blur box — one
    seamless blur behind header + toolbar */
@@ -1359,6 +1357,9 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 /* both side slots become full-screen sliding windows */
 .shell.phone .detail-slot { position: fixed; inset: calc(env(safe-area-inset-top, 0px) + 10px) 10px calc(env(safe-area-inset-bottom, 0px) + 56px); width: auto !important; z-index: 120; transition: none; } /* clears the status bar (taller on zoomed displays) and stops above the bottom menu */
 .shell.phone .detail-slot.clip { display: none; }
+/* phone slots OVERLAY the planners (desktop panels sit beside them on an opaque ground),
+   so the glass blur is real here — scope it back on */
+.shell.phone .detail { -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px); }
 .shell.phone .detail-slot:not(.clip) { animation: phone-slide-r 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .shell.phone .detail-slot.left-slot:not(.clip) { animation-name: phone-slide-l; }
 @keyframes phone-slide-r { from { transform: translateX(60%); opacity: 0; } }

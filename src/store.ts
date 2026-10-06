@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CalendarEvent, Data, GoogleUser, ISODate, Project, Workspace } from './types';
 import { addDays, todayISO, weekStart } from './dates';
+import { appIdle } from './idle';
 import { createTeam as cloudCreateTeam, deleteTeam as cloudDeleteTeam, ensureProfile, ensureSession, listMyTeams, loadTeam, persistDiff, subscribeTeam, supabase, type TeamSummary } from './cloud';
 
 export interface GoogleConfig {
@@ -63,6 +64,10 @@ export const uid = () => crypto.randomUUID();
  * Both windows run this; the main process dedupes by id, so it fires once regardless.
  * The first sight of a team's data only seeds the ledger (no blast of old notifications on launch).
  */
+/** Ids already bannered straight off the realtime payload (the ungated path below) —
+    the reload-driven pass must not fire them a second time. */
+const bannered = new Set<string>();
+
 export function useSystemNotifications(data: Data | null) {
   const seen = useRef<Set<string> | null>(null);
   const teamRef = useRef<string | null>(null);
@@ -77,6 +82,7 @@ export function useSystemNotifications(data: Data | null) {
     for (const n of mine) {
       if (seen.current.has(n.id)) continue;
       seen.current.add(n.id);
+      if (bannered.has(n.id)) continue;
       window.exponential.notify({ id: n.id, title: 'Exponential', body: n.text, ref: n.ref });
     }
   }, [data]);
@@ -290,6 +296,9 @@ export function useData() {
     let busy = false;
     const check = async () => {
       if (busy || !cloudRef.current) return;
+      // a parked window (hidden widget, covered main window) skips the poll; the focus
+      // listener below runs this immediately when the user comes back
+      if (document.visibilityState === 'hidden' || appIdle()) return;
       busy = true;
       try {
         await ensureProfile();
@@ -320,9 +329,23 @@ export function useData() {
   const me = cloud?.me;
   useEffect(() => {
     if (!teamId || !me) return;
+    let lastReload = 0;
     return subscribeTeam(teamId, me, () => {
-      if (document.visibilityState === 'hidden') { reloadWanted.current = true; return; }
+      // appIdle: the transparent mac window never reports occlusion, so 'hidden' alone
+      // missed the covered-behind-other-apps case — teammate edits reloaded the whole
+      // team all day for nobody. Parked edits catch up on focus/wake below — and a
+      // 5-minute trickle bounds the staleness for a window someone merely WATCHES
+      // (second monitor): parked is never more than 5 minutes behind.
+      const parked = document.visibilityState === 'hidden' || appIdle();
+      if (parked && Date.now() - lastReload < 300_000) { reloadWanted.current = true; return; }
+      lastReload = Date.now();
       reload(teamId);
+    }, (n) => {
+      // banners must NOT park: a review request matters most while you work elsewhere.
+      // Fired straight off the realtime row; the reload pass skips ids seen here.
+      if (n.read || n.to !== me || bannered.has(n.id) || !window.exponential?.notify) return;
+      bannered.add(n.id);
+      window.exponential.notify({ id: n.id, title: 'Exponential', body: n.text, ref: n.ref });
     });
   }, [teamId, me, reload]);
   useEffect(() => {
@@ -330,7 +353,8 @@ export function useData() {
       if (document.visibilityState === 'visible' && reloadWanted.current && inflight.current === 0) { reloadWanted.current = false; reload(); }
     };
     document.addEventListener('visibilitychange', vis);
-    return () => document.removeEventListener('visibilitychange', vis);
+    window.addEventListener('focus', vis);
+    return () => { document.removeEventListener('visibilitychange', vis); window.removeEventListener('focus', vis); };
   }, [reload]);
 
   // The widget and the main window are separate renderers on the same machine: after either one

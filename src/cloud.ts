@@ -349,14 +349,18 @@ export async function persistDiff(prev: Data, next: Data) {
 /* ─── Realtime ─────────────────────────────────────────────────────────── */
 
 /** Calls `onChange` (debounced) whenever any row of this team changes; caller reloads. */
-export function subscribeTeam(teamId: string, me: string, onChange: () => void): () => void {
+export function subscribeTeam(teamId: string, me: string, onChange: () => void, onNotification?: (n: Notification) => void): () => void {
   let timer: number | undefined;
   const kick = () => { window.clearTimeout(timer); timer = window.setTimeout(onChange, 150); };
   const ch: RealtimeChannel = supabase.channel(`team:${teamId}`);
   for (const table of ['projects', 'deadlines', 'tasks', 'retros', 'team_members', 'teams', 'groups']) {
     ch.on('postgres_changes', { event: '*', schema: 'public', table, filter: table === 'teams' ? `id=eq.${teamId}` : `team_id=eq.${teamId}` }, kick);
   }
-  ch.on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `to_user=eq.${me}` }, kick);
+  // the row payload rides along so banners can fire even while the reload itself is parked
+  ch.on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `to_user=eq.${me}` }, (p) => {
+    kick();
+    if (p.eventType === 'INSERT' && onNotification) { try { onNotification(toNotification(p.new as NotificationRow)); } catch { /* malformed row */ } }
+  });
   ch.on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, kick);
   ch.subscribe();
   return () => { window.clearTimeout(timer); supabase.removeChannel(ch); };
