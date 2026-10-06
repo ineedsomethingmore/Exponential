@@ -1,7 +1,7 @@
 {
   "name": "exponential",
   "productName": "Exponential",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Simple team planning: the big plan and the week, side by side.",
   "main": "electron/main.cjs",
   "private": true,
