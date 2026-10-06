@@ -1,0 +1,108 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CRM sheet fixture</title></head><body>
+<div id="root"></div>
+<script type="module">
+// The CRM page (overview + live sheet + record) on SYNTHETIC data, no network: supabase.from is replaced by an
+// in-memory table store, and the realtime channel by a stub the test can fire (window.__rt). This repo is public,
+// so nothing here may ever be a real person. Served by vite: npx vite --port 5191, then /tests/crm/sheet.html
+// (?dark for the dark theme). Driven by tests/crm/sheet-shots.mjs.
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { CrmPage } from '/src/CrmPage.tsx';
+import { supabase } from '/src/cloud.ts';
+import '/src/styles.css';
+
+const TEAM = 'team-fixture';
+const now = Date.now();
+const iso = (hoursAgo) => new Date(now - hoursAgo * 3_600_000).toISOString();
+const day = (daysFromToday) => { const d = new Date(now + daysFromToday * 86_400_000); return d.toISOString().slice(0, 10); };
+const first = ['Avery', 'Jordan', 'Riley', 'Morgan', 'Casey', 'Quinn', 'Rowan', 'Emerson', 'Harper', 'Sage', 'Parker', 'Reese', 'Dakota', 'Finley', 'Hayden', 'Skyler', 'Elliot', 'Marlow', 'Lennox', 'Shiloh', 'Arden', 'Blair', 'Callan', 'Devon', 'Ellis', 'Frankie', 'Greer', 'Hollis', 'Indy', 'Jules', 'Kai', 'Lane', 'Milan', 'Noel', 'Oakley', 'Peyton'];
+const last = ['Fixture', 'Sample', 'Example', 'Testwell', 'Mockford', 'Placeholder'];
+const cos = ['Northwind Labs', 'Contoso Capital', 'Fabrikam Robotics', 'Tailspin Air', 'Litware', null, 'Wingtip Ventures', null, 'Proseware'];
+const titles = ['Founder', 'Partner', 'Head of Engineering', 'Pilot', null, 'Student', 'Product designer', 'Managing Director'];
+const heads = [
+  'Founder of a hardware startup in Austin; flies a light-sport aircraft (likely).',
+  'Partner at an early-stage fund focused on mobility (confirmed via fund site).',
+  'Aerospace engineering student; no professional footprint.',
+  'Several people share this name; no confident match.',
+  'Head of engineering at a robotics company; private pilot per a podcast bio.',
+  null,
+];
+const words = [
+  'Would love to come see it in person when you are ready. Is there a waiting list?',
+  'I run a small fund and would like to understand your round.',
+  'How much will it cost and when can I fly one?',
+  'Saw the teaser. Can I visit the hangar with my son?',
+  'We make carbon parts and would like to supply you.',
+  '',
+];
+const people = first.map((f, i) => {
+  const contacted = i % 4 === 1 || i % 7 === 0;
+  const replied = contacted && i % 3 === 0;
+  return {
+    id: `p-${String(i + 1).padStart(3, '0')}`, team_id: TEAM, name: `${f} ${last[i % last.length]}`, first_name: f, last_name: last[i % last.length],
+    email_normalized: `${f.toLowerCase()}.${i}@example.test`, emails: [`${f.toLowerCase()}.${i}@example.test`], phone_as_typed: i % 3 ? `+1 415 555 01${String(i).padStart(2, '0')}` : null, phone_e164: null,
+    x_user_id: null, x_handle: i % 5 === 0 ? `${f.toLowerCase()}_flies` : null, linkedin_url: i % 4 === 2 ? `https://www.linkedin.com/in/${f.toLowerCase()}-example` : null,
+    company: cos[i % cos.length], job_title: titles[i % titles.length], location_text: ['San Francisco', 'Austin, TX', 'Seoul', null, 'Copenhagen'][i % 5], country: null, timezone: null,
+    types: i % 6 === 1 ? ['customer', 'investor'] : ['customer'], contributor_kind: null,
+    customer_stage: i % 11 === 3 ? 'engaged' : i % 13 === 5 ? 'visiting' : i === 9 ? 'cancelled' : 'lead', investor_stage: i % 6 === 1 ? 'new' : null,
+    investor_firm: null, investor_notes: null, contributor_stage: null, owner_user_id: i % 3 === 0 ? 'u-iain' : i % 3 === 1 ? 'u-rasmus' : null, backup_user_id: null,
+    source_channel: i % 8 === 0 ? 'import_twenty' : 'website_form', source_detail: null, source_at: iso(i < 5 ? i * 6 + 1 : i * 19), attribution: null,
+    summary: null, next_action: i % 5 === 2 ? 'Call about a hangar visit date' : i % 7 === 3 ? 'Send the investor deck' : null,
+    next_action_due: i % 5 === 2 ? day(i % 2 ? -1 : 0) : i % 7 === 3 ? day(3) : null,
+    last_inbound_at: replied ? iso(i * 2) : iso(i < 5 ? i * 6 + 1 : i * 19), last_outbound_at: contacted ? iso(i * 5 + 30) : null, last_touch_channel: null,
+    consent_marketing_at: null, consent_source: null, do_not_contact: i === 17, flags: i === 35 ? ['test'] : [], merged_into: null, created_by: 'system:website_form', created_at: iso(i * 19), updated_at: iso(1),
+    notes: i % 9 === 4 ? 'Met at the open day. Prefers text.' : null,
+    enrichment: heads[i % heads.length] ? { identity: { match: ['likely', 'confirmed', 'not_found', 'ambiguous', 'likely'][i % 5], reason: 'Matched on the company email domain and a LinkedIn profile that links to it.' },
+      headline: heads[i % heads.length], summary: 'Synthetic summary for the fixture. The main uncertainty is whether the profile found is really this person.',
+      findings: [{ finding: 'Lists a private pilot certificate in a conference bio (as of 2024).', confidence: 'likely', source: 'https://example.com/bio' }, { finding: 'Founded a company that makes sensor modules.', confidence: 'confirmed', source: 'https://example.com/about' }],
+      unknowns: ['Budget', 'Whether they have flown an ultralight'], sources: [{ url: 'https://example.com/bio', what: 'conference bio' }], version: 2 } : null,
+    enrichment_headline: heads[i % heads.length], enrichment_summary: heads[i % heads.length] ? 'Synthetic summary for the fixture.' : null,
+    enrichment_lane: null, enrichment_fit: null, enrichment_status: heads[i % heads.length] ? 'done' : i === 35 ? 'skipped' : 'pending', enriched_at: heads[i % heads.length] ? iso(2) : null, enrichment_model: 'gpt-5.6-sol',
+  };
+});
+const db = {
+  crm_people: people,
+  crm_submissions: people.filter((p, i) => words[i % words.length]).map((p, i) => ({ id: `s-${i}`, team_id: TEAM, person_id: p.id, channel: 'website_form', received_at: p.last_inbound_at, text_body: words[people.indexOf(p) % words.length], source_url: null })),
+  crm_actions: [{ id: 'a-1', team_id: TEAM, person_id: 'p-002', reservation_id: null, owner_user_id: 'u-iain', kind: 'reply', title: 'Reply about the fund round', reason: null, priority: 1, due_date: day(0), status: 'open', outcome: null, created_by: 'agent', created_at: iso(3), done_at: null }],
+  crm_interactions: [{ id: 'i-1', team_id: TEAM, person_id: 'p-002', channel: 'email', direction: 'outbound', occurred_at: iso(40), summary: 'Sent the hangar invitation.', body: null, source_url: null, external_ref: null, actor_user_id: 'u-iain', created_by: 'user' }],
+  crm_reservations: [],
+  crm_audit: [],
+};
+window.__db = db; window.__writes = []; window.__rt = {};
+
+function from(table) {
+  const st = { filters: [], orders: [], op: 'select', patch: null, single: false, range: null, limit: null };
+  const api = {
+    select() { return api; }, eq(c, v) { st.filters.push((r) => r[c] === v); return api; }, is(c, v) { st.filters.push((r) => (r[c] ?? null) === v); return api; },
+    not(c, _op, v) { st.filters.push((r) => (r[c] ?? null) !== v); return api; }, in(c, vs) { st.filters.push((r) => vs.includes(r[c])); return api; }, or() { return api; },
+    order(c, o = {}) { st.orders.push([c, o.ascending !== false]); return api; }, limit(n) { st.limit = n; return api; }, range(a, b) { st.range = [a, b]; return api; },
+    update(p) { st.op = 'update'; st.patch = p; return api; }, insert(row) { st.op = 'insert'; st.patch = row; return api; },
+    single() { st.single = true; return api; }, maybeSingle() { st.single = true; return api; },
+    then(res, rej) { return new Promise((r) => setTimeout(r, 30)).then(run).then(res, rej); },
+  };
+  function run() {
+    if (st.op === 'insert') { (db[table] ??= []).push(st.patch); window.__writes.push({ table, op: 'insert', row: st.patch }); return { data: null, error: null }; }
+    let hit = (db[table] ?? []).filter((r) => st.filters.every((f) => f(r)));
+    if (st.op === 'update') { for (const r of hit) Object.assign(r, st.patch, { updated_at: new Date().toISOString() }); window.__writes.push({ table, op: 'update', patch: st.patch }); }
+    for (const [c, asc] of [...st.orders].reverse()) hit = [...hit].sort((a, b) => ((a[c] ?? '') < (b[c] ?? '') ? -1 : (a[c] ?? '') > (b[c] ?? '') ? 1 : 0) * (asc ? 1 : -1));
+    if (st.range) hit = hit.slice(st.range[0], st.range[1] + 1);
+    if (st.limit) hit = hit.slice(0, st.limit);
+    const data = JSON.parse(JSON.stringify(hit));
+    return { data: st.single ? data[0] ?? null : data, error: null };
+  }
+  return api;
+}
+supabase.from = from;
+supabase.channel = () => { const ch = { on(_e, o, cb) { window.__rt[o.table] = cb; return ch; }, subscribe() { return ch; } }; return ch; };
+supabase.removeChannel = async () => {};
+
+if (new URL(location.href).searchParams.has('dark')) document.documentElement.dataset.theme = 'dark';
+const team = [{ id: 'u-iain', name: 'Alex Morgan', color: '#0a84ff' }, { id: 'u-rasmus', name: 'Sam Lee', color: '#ff9f0a' }, { id: 'u-gustau', name: 'Kim Park', color: '#30a46c' }];
+document.body.style.cssText = 'margin:0;height:100vh;background:var(--bg);display:flex;padding:18px;box-sizing:border-box';
+createRoot(document.getElementById('root')).render(
+  React.createElement('div', { className: 'main crm-active', style: { flex: 1, height: 'calc(100vh - 36px)', display: 'flex' } },
+    React.createElement(CrmPage, { teamId: TEAM, me: 'u-iain', people: team, cloud: true, onClose: () => {}, onError: (m) => { window.__errors = [...(window.__errors ?? []), m]; console.error(m); } })));
+document.getElementById('root').style.cssText = 'flex:1;display:flex;min-width:0';
+</script>
+</body></html>

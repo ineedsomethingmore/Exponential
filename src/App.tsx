@@ -17,6 +17,8 @@ import { addDays, todayISO, weekStart } from './dates';
 import { ChatPage } from './ChatPage';
 import { fetchChat, mentionsToNames, onChatEvent, purgeExpiredChatFiles, subscribeChat, type Channel } from './chat';
 import { MeetingsPage } from './MeetingsPage';
+import { CrmPage } from './CrmPage';
+import { hasCrm } from './crmSheet';
 import { subscribeMeetings } from './meetings';
 
 /** Layout proportions, remembered per machine (not part of the shared plan data). */
@@ -117,9 +119,8 @@ export default function App() {
     return window.exponential?.onUpdate((s) => setUpdateState((prev) => (s.state === 'checking' ? prev : s)));
   }, []);
   const [view, setView] = useState<'plan' | 'team'>('plan');
-  // chat / meetings live in a LEFT side panel; both sides can be open at once — every
-  // column (left panel, planners, right panel) keeps at least ~a fifth of the window.
-  const [leftPanel, setLeftPanel] = useState<'chat' | 'meetings' | null>(null);
+  // Chat and Meetings use a LEFT side panel (both sides can be open at once); CRM owns the entire content area when selected.
+  const [leftPanel, setLeftPanel] = useState<'chat' | 'meetings' | 'crm' | null>(null);
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 700px)').matches);
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 700px)');
@@ -256,6 +257,16 @@ export default function App() {
   const [googleUser, setGoogleUser] = useState<GoogleUser | null>(null);
   const [mTeamsOpen, setMTeamsOpen] = useState(false);
   const chatBackRef = useRef<(() => boolean) | null>(null);
+  const crmBackRef = useRef<(() => boolean) | null>(null);
+  // The CRM item appears only for a team whose crm_people table has rows (one head count per team switch),
+  // so the other teams on Exponential never see an empty CRM.
+  const [crmTeam, setCrmTeam] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setCrmTeam(null);
+    if (data?.id) hasCrm(data.id, cloudMode).then((yes) => { if (live && yes) setCrmTeam(data.id); }).catch(() => {});
+    return () => { live = false; };
+  }, [data?.id, cloudMode]);
   // A tapped push notification's target conversation. Kept in a ref because the deep-link
   // arrives at mount, BEFORE the team loads — the team-load chat reset used to wipe the
   // chatActive it had set, so every cold start landed on the plan instead of the thread.
@@ -273,6 +284,7 @@ export default function App() {
     history.pushState({ exp: 2 }, '');
     const onPop = () => {
       history.pushState({ exp: 2 }, '');
+      if (crmBackRef.current) { if (!crmBackRef.current()) setLeftPanel(null); return; }
       if (selRef.current) { setSelection(null); return; }
       if (chatBackRef.current?.()) return;
       if (leftOpenRef.current) setLeftPanel(null);
@@ -623,6 +635,7 @@ export default function App() {
   useEffect(() => window.exponential?.onOpen((t) => {
     if (t.kind === 'chat') { setLeftPanel('chat'); setChatActive(t.id); setChatJump(true); return; }
     if (t.kind === 'meeting') { setLeftPanel('meetings'); return; }
+    setLeftPanel((current) => current === 'crm' ? null : current);
     setView('plan'); setSelection(t as Selection);
   }), []); // eslint-disable-line react-hooks/exhaustive-deps
   useSystemNotifications(data);
@@ -958,7 +971,9 @@ export default function App() {
   const selDeadline = selection?.kind === 'deadline' ? data.deadlines.find((d) => d.id === selection.id) : undefined;
   const detailOpen = !!(selProject || selTask || selDeadline) || selection?.kind === 'retro';
   detailRef.current = detailOpen;
-  const leftOpen = leftPanel !== null;
+  const crmOpen = leftPanel === 'crm';
+  const showCrm = crmTeam === data.id || crmOpen; // only a team that has a CRM record shows the item
+  const leftOpen = leftPanel !== null && !crmOpen;
   const unread = (data.notifications ?? []).filter((n) => n.to === data.me && !n.read).length;
   const chatUnread = chat.reduce((n, c) => n + c.unread, 0);
 
@@ -1185,12 +1200,12 @@ export default function App() {
         <div className="team-list">
           {teams.map((t) => (
             <div key={t.id} className={`team-row${t.id === data.id ? ' current' : ''}`} title={t.name}>
-              <button className="team-main" onClick={() => { if (t.id !== data.id) { switchTeam(t.id); setSelection(null); setSelectedPerson(null); setView('plan'); } else setView('plan'); }}>
+              <button className="team-main" onClick={() => { if (t.id !== data.id) { switchTeam(t.id); setSelection(null); setSelectedPerson(null); setView('plan'); } else setView('plan'); if (crmOpen) setLeftPanel(null); }}>
                 <TeamMark team={t} />
                 <span className="team-name">{t.name}</span>
               </button>
-              <button className={`team-cog${t.id === data.id && view === 'team' ? ' on' : ''}`} title="Team settings"
-                onClick={() => { if (t.id !== data.id) { switchTeam(t.id); setSelectedPerson(null); } setSelection(null); setView('team'); }}>
+              <button className={`team-cog${t.id === data.id && view === 'team' && !crmOpen ? ' on' : ''}`} title="Team settings"
+                onClick={() => { if (t.id !== data.id) { switchTeam(t.id); setSelectedPerson(null); } setSelection(null); setView('team'); if (crmOpen) setLeftPanel(null); }}>
                 <CogIcon />
               </button>
             </div>
@@ -1200,7 +1215,7 @@ export default function App() {
             <span className="team-name">New team</span>
           </button>
         </div>
-        <button className={`nav-item${view === 'plan' ? ' active' : ''}`} onClick={() => setView('plan')}><PlanIcon /> <span className="nav-text">Plan</span></button>
+        <button className={`nav-item${view === 'plan' && !crmOpen ? ' active' : ''}`} onClick={() => { setView('plan'); if (crmOpen) setLeftPanel(null); }}><PlanIcon /> <span className="nav-text">Plan</span></button>
         <button className={`nav-item${leftPanel === 'chat' ? ' active' : ''}`} onClick={() => setLeftPanel(leftPanel === 'chat' ? null : 'chat')}>
           <span className="nav-ico"><ChatIcon />{(chatUnread > 0 || unread > 0) && <span className="nav-dot" />}</span>
           <span className="nav-text">Messages</span>
@@ -1209,6 +1224,12 @@ export default function App() {
           <span className="nav-ico"><MeetIcon />{meetDot && <span className="nav-dot" />}</span>
           <span className="nav-text">Meetings</span>
         </button>
+        {showCrm && (
+          <button className={`nav-item${leftPanel === 'crm' ? ' active' : ''}`} onClick={() => setLeftPanel(leftPanel === 'crm' ? null : 'crm')} title="The customer record: today's overview and the live sheet">
+            <span className="nav-ico"><CrmIcon /></span>
+            <span className="nav-text">CRM</span>
+          </button>
+        )}
 
         <div className="sidebar-bottom">
           {(!updateInfo || updateInfo.state === 'none' || updateInfo.state === 'error' || updateInfo.state === 'available') && (
@@ -1254,7 +1275,18 @@ export default function App() {
        </div>
       </aside>
 
-      <div className={`main${detailOpen ? ' with-detail' : ''}`}>
+      <div className={`main${detailOpen && !crmOpen ? ' with-detail' : ''}${crmOpen ? ' crm-active' : ''}`}>
+        {crmOpen && (
+          <CrmPage
+            teamId={data.id}
+            me={data.me}
+            people={data.people}
+            cloud={cloudMode}
+            onClose={() => setLeftPanel(null)}
+            onError={(m) => { setSaveError(m); window.setTimeout(() => setSaveError(null), 6000); }}
+            backRef={crmBackRef}
+          />
+        )}
         <div
           className={`detail-slot left-slot${lResizing ? ' no-anim' : ''}${!leftOpen ? ' clip' : ''}`}
           style={{ width: leftOpen ? leftW + 14 : 0 }}
@@ -1298,7 +1330,7 @@ export default function App() {
           )}
           {leftOpen && <div className={`vresizer${lResizing ? ' dragging' : ''}`} onPointerDown={onLResizeDown} />}
         </div>
-        {view === 'team' && (
+        {view === 'team' && !crmOpen && (
           <TeamPage
             team={data}
             cloud={cloudMode}
@@ -1307,7 +1339,7 @@ export default function App() {
             onDelete={() => { setView('plan'); setSelection(null); setSelectedPerson(null); deleteTeam(data.id); }}
           />
         )}
-        <div className="planners" ref={mainRef} style={view !== 'plan' ? { display: 'none' } : undefined}>
+        <div className="planners" ref={mainRef} style={view !== 'plan' || crmOpen ? { display: 'none' } : undefined}>
           <section className="panel" style={{ flex: '1 1 0' }} ref={planSecRef}>
             <div className="panel-head">
               <div className="panel-title">Master plan</div>
@@ -1334,7 +1366,7 @@ export default function App() {
         {/* The slot animates its width so the planners squeeze smoothly; the panel inside keeps a fixed width. */}
         <div
           className={`detail-slot${vResizing ? ' no-anim' : ''}${slotAnimating || !detailOpen ? ' clip' : ''}`}
-          style={{ width: detailOpen ? detailW + 14 : 0 }}
+          style={{ width: detailOpen ? detailW + 14 : 0, display: crmOpen ? 'none' : undefined }}
           onTransitionEnd={(e) => { if (e.propertyName === 'width') setSlotAnimating(false); }}
         >
         {detailOpen && <div className={`vresizer${vResizing ? ' dragging' : ''}`} onPointerDown={onVResizeDown} />}
@@ -1361,6 +1393,12 @@ export default function App() {
               <span className="nav-ico"><MeetIcon />{meetDot && <span className="nav-dot" />}</span>
               Meetings
             </button>
+            {showCrm && (
+              <button className={leftPanel === 'crm' ? 'on' : ''} onClick={() => setLeftPanel(leftPanel === 'crm' ? null : 'crm')}>
+                <span className="nav-ico"><CrmIcon /></span>
+                CRM
+              </button>
+            )}
             <button className={mTeamsOpen ? 'on' : ''} onClick={() => setMTeamsOpen((v) => !v)}>
               <TeamMark team={teams.find((t) => t.id === data.id) ?? { id: data.id, name: data.name, icon: data.icon }} size={18} />
               Teams
@@ -1416,7 +1454,7 @@ export default function App() {
         />
       )}
       {sheet === 'new-team' && (
-        <NewTeamSheet onClose={() => setSheet(null)} onCreate={(name) => { createTeam(name); setSelection(null); setSelectedPerson(null); setView('team'); }} />
+        <NewTeamSheet onClose={() => setSheet(null)} onCreate={(name) => { createTeam(name); setSelection(null); setSelectedPerson(null); setView('team'); if (crmOpen) setLeftPanel(null); }} />
       )}
       {sheet === 'settings' && (
         <SettingsSheet
@@ -1453,6 +1491,15 @@ function MeetIcon() {
   );
 }
 
+function CrmIcon() {
+  // a person with a small list beside them: the record
+  return (
+    <svg {...ICON}>
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M3.5 19.5a5.5 5.5 0 0 1 11 0M16 7h4.5M16 11h4.5M16 15h4.5" />
+    </svg>
+  );
+}
 function ChatIcon() {
   return (
     <svg {...ICON}>
