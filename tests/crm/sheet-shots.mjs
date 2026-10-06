@@ -92,7 +92,7 @@ const cellText = await evaluate(`document.querySelector('td[data-cell="${firstId
 check('the cell shows the stored value', cellText === 'Called, visiting Friday', cellText);
 
 // 3. Stage select: Enter opens, pick "engaged"; then Escape on another edit writes nothing
-const stageCol = 1;
+const stageCol = await evaluate(`[...document.querySelectorAll('.cs-grid thead th')].findIndex((th) => th.textContent.startsWith('Customer stage')) - 1`);
 await click(`td[data-cell="${firstId}:${stageCol}"]`);
 await key('Enter', 'Enter', '\r');
 await evaluate(`(() => { const s = document.querySelector('select.cs-edit'); const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; set.call(s, 'engaged'); s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
@@ -105,6 +105,17 @@ await key('X', 'KeyX', 'X');
 await key('Escape', 'Escape');
 await sleep(200);
 check('Escape cancels without a write', (await evaluate(`window.__writes.length`)) === before);
+
+// 3b. the chat box sends with the member's token and shows the agent's reply and what changed
+await click('.cs-overview .cs-chat-in textarea');
+await send('Input.insertText', { text: 'Called Avery, sending the deck' });
+await key('Enter', 'Enter', '\r');
+for (let i = 0; i < 20; i++) { if (await evaluate(`document.querySelectorAll('.cs-overview .cs-turn.agent:not(.busy)').length`)) break; await sleep(150); }
+const chat = await evaluate(`JSON.stringify({ calls: window.__chat.length, auth: window.__chat[0] && window.__chat[0].auth, msg: window.__chat[0] && window.__chat[0].body.message, reply: (document.querySelector('.cs-overview .cs-turn.agent p') || {}).textContent, applied: (document.querySelector('.cs-overview .cs-turn.agent li') || {}).textContent })`);
+const ch = JSON.parse(chat);
+check('the chat box sends the message with the session token', ch.calls === 1 && ch.auth === 'Bearer fixture-token' && ch.msg === 'Called Avery, sending the deck', chat);
+check('and shows the reply with what changed', /Noted/.test(ch.reply || '') && /Next step/.test(ch.applied || ''), chat);
+await shot('2b-chat');
 
 // 4. realtime insert
 await evaluate(`window.__rt.crm_people({ eventType: 'INSERT', new: { ...window.__db.crm_people[0], id: 'p-new', name: 'Brand New Lead', email_normalized: 'new@example.test', source_at: new Date().toISOString(), last_inbound_at: new Date().toISOString(), last_outbound_at: null, flags: [] }, old: {} })`);
@@ -119,6 +130,17 @@ const rec = await evaluate(`JSON.stringify({ open: !!document.querySelector('.cs
 const r = JSON.parse(rec);
 check('the record opens with research and every column', r.open && r.findings > 0 && r.raw > 40, rec);
 await shot('3-record');
+// the record lists changes, and Undo puts the earlier value back (recorded as a new edit)
+await key('Escape', 'Escape');
+await click(`tr:has(td[data-cell^="${firstId}:"]) .cs-open`);
+await sleep(400);
+const hist = await evaluate(`document.querySelectorAll('.cs-record .cs-change').length`);
+check('the record shows its change history', hist > 0, String(hist));
+const undoBtn = await evaluate(`(() => { const rows = [...document.querySelectorAll('.cs-record .cs-change-row')]; const r = rows.find((x) => x.querySelector('.cs-change-f').textContent === 'Notes' && !x.querySelector('.cs-undo').disabled); if (!r) return false; r.querySelector('.cs-undo').click(); return true; })()`);
+await sleep(400);
+const notesNow = await evaluate(`window.__db.crm_people.find((p) => p.id === ${JSON.stringify(firstId)}).notes`);
+check('Undo restores the earlier notes', undoBtn && (notesNow === null || notesNow === undefined), String(notesNow));
+await shot('3b-history');
 await key('Escape', 'Escape');
 
 // filters

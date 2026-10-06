@@ -14,19 +14,19 @@ import { supabase } from './cloud';
 export interface SheetPerson {
   id: string; team_id: string; name: string | null; email_normalized: string | null; emails: string[]; phone_as_typed: string | null;
   x_handle: string | null; linkedin_url: string | null; company: string | null; job_title: string | null; location_text: string | null;
-  types: string[]; customer_stage: string | null; investor_stage: string | null; owner_user_id: string | null;
-  source_channel: string; source_at: string; next_action: string | null; next_action_due: string | null;
+  types: string[]; customer_stage: string | null; investor_stage: string | null; contributor_stage?: string | null; contributor_kind?: string | null;
+  investor_firm?: string | null; investor_notes?: string | null;
+  source_channel: string; source_at: string; next_action: string | null; next_action_kind?: string | null; next_action_due: string | null;
   last_inbound_at: string | null; last_outbound_at: string | null; do_not_contact: boolean; flags: string[]; merged_into: string | null;
   notes?: string | null; created_at: string; updated_at?: string;
   enrichment?: Record<string, unknown> | null; enrichment_summary?: string | null; enrichment_headline?: string | null;
   enrichment_status?: string | null; enriched_at?: string | null; enrichment_model?: string | null;
   [key: string]: unknown;
 }
-export interface SheetAction { id: string; person_id: string | null; owner_user_id: string; title: string; priority: number; due_date: string | null; status: string }
 export interface SheetInteraction { id: string; person_id: string; channel: string; direction: 'inbound' | 'outbound' | 'internal'; occurred_at: string; summary: string; body: string | null; actor_user_id: string | null }
 export interface SheetReservation { id: string; series: string; edition_number: number | null; funding_status: string; acceptance_status: string }
 export interface LastWords { at: string; text: string; channel: string }
-export interface SheetData { people: SheetPerson[]; said: Record<string, LastWords>; actions: SheetAction[]; loaded: boolean }
+export interface SheetData { people: SheetPerson[]; said: Record<string, LastWords>; loaded: boolean }
 
 const PAGE = 500;
 
@@ -57,14 +57,9 @@ async function lastWords(teamId: string): Promise<Record<string, LastWords>> {
 }
 
 export async function fetchSheet(teamId: string, cloud: boolean): Promise<SheetData> {
-  if (!cloud) return { people: [], said: {}, actions: [], loaded: true };
-  const [people, said, actions] = await Promise.all([
-    allPeople(teamId),
-    lastWords(teamId),
-    supabase.from('crm_actions').select('*').eq('team_id', teamId).eq('status', 'open').order('priority').order('due_date', { ascending: true, nullsFirst: false }).limit(300),
-  ]);
-  if (actions.error) throw actions.error;
-  return { people, said, actions: actions.data as SheetAction[], loaded: true };
+  if (!cloud) return { people: [], said: {}, loaded: true };
+  const [people, said] = await Promise.all([allPeople(teamId), lastWords(teamId)]);
+  return { people, said, loaded: true };
 }
 
 /** Whether this team keeps a CRM at all (any crm_people row): the app shows the CRM item only then. */
@@ -75,11 +70,10 @@ export async function hasCrm(teamId: string, cloud: boolean): Promise<boolean> {
   return (count ?? 0) > 0;
 }
 
-/** Realtime: people rows patch the sheet in place; a new submission updates "Wrote"; actions refresh as rows. */
+/** Realtime: people rows patch the sheet in place; a new submission updates "What they wrote". */
 export function subscribeSheet(teamId: string, cloud: boolean, h: {
   person: (row: SheetPerson | null, oldId?: string) => void;
   words: (personId: string, w: LastWords) => void;
-  action: (row: SheetAction | null, oldId?: string) => void;
 }): () => void {
   if (!cloud) return () => {};
   const ch = supabase.channel(`crm-sheet:${teamId}:${Math.random().toString(36).slice(2, 8)}`);
@@ -91,10 +85,6 @@ export function subscribeSheet(teamId: string, cloud: boolean, h: {
   ch.on('postgres_changes', { event: '*', schema: 'public', table: 'crm_submissions', filter }, (p) => {
     const r = p.new as { person_id?: string | null; received_at?: string; text_body?: string | null; channel?: string } | null;
     if (r?.person_id && r.received_at && (r.text_body ?? '').trim()) h.words(r.person_id, { at: r.received_at, text: (r.text_body ?? '').trim(), channel: r.channel ?? '' });
-  });
-  ch.on('postgres_changes', { event: '*', schema: 'public', table: 'crm_actions', filter }, (p) => {
-    if (p.eventType === 'DELETE') h.action(null, (p.old as { id?: string })?.id);
-    else h.action(p.new as SheetAction);
   });
   ch.subscribe();
   return () => { supabase.removeChannel(ch); };
@@ -125,8 +115,32 @@ export async function fetchRecord(personId: string, cloud: boolean): Promise<Rec
   return { interactions: i.data as SheetInteraction[], submissions: s.data as RecordDetail['submissions'], reservations: r.data as SheetReservation[] };
 }
 
-/** The one-line reference a human pastes into Claude or Codex to work this person ("Open in agent"). */
-export const agentRef = (id: string, label: string) => `crm person ${id} ${label.replace(/\s+/g, ' ').trim()}`;
+/* ── history: every change to one person, newest first, from crm_audit (the sheet, the chat box, the agents) ── */
+export interface Change { id: number; at: string; surface: string; actor_user_id: string | null; before: Record<string, unknown> | null; after: Record<string, unknown> | null }
+export async function fetchHistory(personId: string, cloud: boolean): Promise<Change[]> {
+  if (!cloud) return [];
+  const { data, error } = await supabase.from('crm_audit').select('id, at, surface, actor_user_id, before, after')
+    .eq('target_table', 'crm_people').eq('target_id', personId).eq('ok', true).order('at', { ascending: false }).limit(60);
+  if (error) throw error;
+  return data as Change[];
+}
+
+/* ── the chat box: the CRM agent on the website's server (api/agent/chat.js), called with this member's session ── */
+export const CRM_AGENT_URL = (import.meta.env.VITE_CRM_AGENT_URL as string | undefined) || 'https://www.utopialabs.com/api/agent/chat';
+export interface ChatTurn { role: 'member' | 'agent'; text: string; applied?: { person_id: string; name: string | null; created: boolean; changed: string[] }[]; questions?: string[]; error?: boolean }
+export async function askCrm(message: string, personId: string | null, conversation: ChatTurn[]): Promise<ChatTurn> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error('not signed in');
+  const res = await fetch(CRM_AGENT_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, person_id: personId, conversation: conversation.slice(-8).map((t) => ({ role: t.role, text: t.text })) }),
+  });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok || !out.ok) throw new Error(out.error || `the CRM agent answered ${res.status}`);
+  return { role: 'agent', text: out.reply || '', applied: out.applied || [], questions: out.questions || [] };
+}
 
 /* ── what counts as what, shared by the overview and the sheet's filters ── */
 

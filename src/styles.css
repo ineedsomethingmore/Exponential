@@ -1587,3 +1587,30 @@ select.cs-edit { padding: 0 4px; }
 }
 .shell.phone .cs-bar { flex-wrap: wrap; }
 .shell.phone .cs-search { flex-basis: 100%; width: 100%; }
+
+/* CRM v2: type filter, chat box, change history */
+.cs-type { padding: 6px 8px; border-radius: 9px; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); border: 0; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--text-2); outline: none; flex: none; }
+.cs-chat { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--line); max-height: 48%; min-height: 0; }
+.cs-chat.compact { border-top: 0; border-bottom: 1px solid var(--line); padding: 12px 20px; max-height: none; }
+.cs-chat-log { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; user-select: text; -webkit-user-select: text; }
+.cs-chat.compact .cs-chat-log { max-height: 260px; }
+.cs-turn { padding: 7px 10px; border-radius: 10px; font-size: 12.5px; line-height: 1.45; max-width: 92%; }
+.cs-turn p { white-space: pre-wrap; }
+.cs-turn.member { align-self: flex-end; background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+.cs-turn.agent { align-self: flex-start; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); }
+.cs-turn.error { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--today) 45%, var(--line)); color: var(--today); }
+.cs-turn.busy p { color: var(--text-3); }
+.cs-turn ul { list-style: none; padding: 0; margin-top: 4px; font-size: 11.5px; color: var(--text-2); display: flex; flex-direction: column; gap: 2px; }
+.cs-turn ul.q { color: color-mix(in srgb, #ff9f0a 75%, var(--text)); }
+.cs-chat-in { display: flex; gap: 8px; align-items: flex-end; }
+.cs-chat-in textarea { flex: 1; min-width: 0; resize: none; padding: 8px 10px; border-radius: 10px; border: 0; outline: none; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); font: inherit; font-size: 12.5px; line-height: 1.4; color: var(--text); }
+.cs-chat-in textarea:focus { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.cs-chat-in .pill:disabled { opacity: 0.5; }
+.cs-change { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.cs-change-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; padding: 2px 0; }
+.cs-change-f { width: 112px; flex: none; color: var(--text-3); font-weight: 600; font-size: 11.5px; }
+.cs-change-v { flex: 1; min-width: 0; color: var(--text-2); }
+.cs-change-v s { color: var(--text-3); }
+.cs-undo { flex: none; font-size: 11px; font-weight: 600; color: var(--accent); padding: 1px 6px; border-radius: 6px; }
+.cs-undo:hover:not(:disabled) { background: var(--soft); }
+.cs-undo:disabled { color: var(--text-3); opacity: 0.6; cursor: default; }

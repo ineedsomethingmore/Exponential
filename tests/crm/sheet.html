@@ -82,7 +82,7 @@ function from(table) {
     then(res, rej) { return new Promise((r) => setTimeout(r, 30)).then(run).then(res, rej); },
   };
   function run() {
-    if (st.op === 'insert') { (db[table] ??= []).push(st.patch); window.__writes.push({ table, op: 'insert', row: st.patch }); return { data: null, error: null }; }
+    if (st.op === 'insert') { (db[table] ??= []).push({ id: Math.floor(Math.random() * 1e9), at: new Date().toISOString(), ok: true, ...st.patch }); window.__writes.push({ table, op: 'insert', row: st.patch }); return { data: null, error: null }; }
     let hit = (db[table] ?? []).filter((r) => st.filters.every((f) => f(r)));
     if (st.op === 'update') { for (const r of hit) Object.assign(r, st.patch, { updated_at: new Date().toISOString() }); window.__writes.push({ table, op: 'update', patch: st.patch }); }
     for (const [c, asc] of [...st.orders].reverse()) hit = [...hit].sort((a, b) => ((a[c] ?? '') < (b[c] ?? '') ? -1 : (a[c] ?? '') > (b[c] ?? '') ? 1 : 0) * (asc ? 1 : -1));
@@ -96,6 +96,22 @@ function from(table) {
 supabase.from = from;
 supabase.channel = () => { const ch = { on(_e, o, cb) { window.__rt[o.table] = cb; return ch; }, subscribe() { return ch; } }; return ch; };
 supabase.removeChannel = async () => {};
+supabase.auth.getSession = async () => ({ data: { session: { access_token: 'fixture-token' } }, error: null });
+// The chat box calls the CRM agent on the website; here a stub applies one change and answers like the server does.
+window.__chat = [];
+const realFetch = window.fetch.bind(window);
+window.fetch = async (url, init = {}) => {
+  if (String(url).includes('/api/agent/chat')) {
+    const body = JSON.parse(init.body || '{}');
+    window.__chat.push({ auth: (init.headers || {}).Authorization, body });
+    const p = db.crm_people[0];
+    p.next_action = 'Send the deck to ' + p.name; p.next_action_kind = 'email';
+    db.crm_audit.push({ id: 9000 + window.__chat.length, team_id: TEAM, target_table: 'crm_people', target_id: p.id, ok: true, at: new Date().toISOString(), surface: 'app:chat', actor_user_id: 'u-iain', before: { next_action: null }, after: { next_action: p.next_action } });
+    if (window.__rt.crm_people) window.__rt.crm_people({ eventType: 'UPDATE', new: { ...p }, old: {} });
+    return new Response(JSON.stringify({ ok: true, reply: 'Noted. Next step set for ' + p.name + '.', applied: [{ person_id: p.id, name: p.name, created: false, changed: ['next_action', 'next_action_kind'] }], questions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+  return realFetch(url, init);
+};
 
 if (new URL(location.href).searchParams.has('dark')) document.documentElement.dataset.theme = 'dark';
 const team = [{ id: 'u-iain', name: 'Alex Morgan', color: '#0a84ff' }, { id: 'u-rasmus', name: 'Sam Lee', color: '#ff9f0a' }, { id: 'u-gustau', name: 'Kim Park', color: '#30a46c' }];
