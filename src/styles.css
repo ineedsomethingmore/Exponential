@@ -1614,3 +1614,56 @@ select.cs-edit { padding: 0 4px; }
 .cs-undo { flex: none; font-size: 11px; font-weight: 600; color: var(--accent); padding: 1px 6px; border-radius: 6px; }
 .cs-undo:hover:not(:disabled) { background: var(--soft); }
 .cs-undo:disabled { color: var(--text-3); opacity: 0.6; cursor: default; }
+
+/* CRM v3: Supabase-style grid (resize, one-line cells, peek, popover editors), concise human columns */
+.cs-grid th { overflow: visible; }
+.cs-grid th > span:first-child { display: inline-block; max-width: calc(100% - 14px); overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+.cs-resize { position: absolute; top: 0; right: 0; width: 9px; height: 100%; cursor: col-resize; z-index: 5; }
+.cs-resize::after { content: ''; position: absolute; top: 25%; bottom: 25%; right: 0; width: 2px; border-radius: 1px; background: transparent; }
+.cs-grid th:hover .cs-resize::after, .cs-resize:active::after { background: var(--accent); }
+.cs-v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cs-grid td.cur .cs-v { text-overflow: clip; }
+.cs-v.late { color: var(--today); font-weight: 650; }
+.cs-v.today { color: var(--text); font-weight: 700; }
+.cs-chips { display: flex; gap: 4px; }
+.cs-chip { display: inline-block; padding: 1px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; white-space: nowrap; background: var(--soft); color: var(--text-2); }
+.cs-chip.t-customer { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.cs-chip.t-investor { background: color-mix(in srgb, #30a46c 15%, transparent); color: #2b9a64; }
+.cs-chip.t-contributor { background: color-mix(in srgb, #8e4ec6 14%, transparent); color: #8e4ec6; }
+.cs-tag.s-lead, .cs-tag.s-new { background: var(--soft); color: var(--text-2); }
+.cs-tag.s-in_conversation, .cs-tag.s-active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.cs-tag.s-parked { background: var(--soft); color: var(--text-3); }
+.cs-kind { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; font-size: 11px; font-weight: 650; background: var(--soft); color: var(--text-2); }
+.cs-badge { flex: none; display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 3px; border-radius: 4px; font-size: 9.5px; font-weight: 800; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line); text-decoration: none !important; }
+.cs-badge:hover { color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.cs-peek { position: fixed; z-index: 60; max-width: 420px; max-height: 240px; overflow: auto; padding: 8px 10px; border-radius: 8px; background: var(--panel); box-shadow: 0 0 0 1px var(--line), var(--menu-shadow); font-size: 12.5px; line-height: 1.45; color: var(--text); white-space: pre-wrap; word-break: break-word; pointer-events: auto; user-select: text; -webkit-user-select: text; }
+.cs-pop { position: fixed; z-index: 70; -webkit-app-region: no-drag; }
+.cs-menu { display: flex; flex-direction: column; gap: 1px; min-width: 220px; max-width: 380px; max-height: 300px; overflow: auto; padding: 6px; border-radius: 10px; background: var(--panel); box-shadow: 0 0 0 1px var(--line), var(--menu-shadow); outline: none; }
+.cs-menu-h { padding: 4px 8px 4px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
+.cs-menu button[data-v], .cs-menu-clear { text-align: left; padding: 6px 8px; border-radius: 6px; font-size: 12.5px; color: var(--text); width: 100%; }
+.cs-menu button[data-v]:hover, .cs-menu button[data-v]:focus { background: var(--row-hov); outline: none; }
+.cs-menu button[data-v].on { color: var(--accent); font-weight: 650; }
+.cs-menu-clear { color: var(--text-3) !important; border-top: 1px solid var(--line); margin-top: 4px; border-radius: 0 0 6px 6px; }
+.cs-menu-check { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12.5px; border-radius: 6px; cursor: pointer; }
+.cs-menu-check:hover { background: var(--row-hov); }
+.cs-menu-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 4px 2px; font-size: 11px; color: var(--text-3); }
+.cs-menu-foot .pill { margin-left: auto; }
+.cs-quick { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 4px 6px; }
+.cs-quick button { padding: 3px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 600; color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line); }
+.cs-quick button:hover { color: var(--text); background: var(--soft); }
+.cs-quick button.on { background: var(--accent); color: #fff; box-shadow: none; }
+.cs-date input[type=date], .cs-pop-input { margin: 0 4px 6px; padding: 6px 8px; border-radius: 7px; border: 0; outline: none; font: inherit; font-size: 13px; color: var(--text); background: var(--frost); box-shadow: inset 0 0 0 1px var(--line); }
+.cs-longedit { width: 380px; max-height: none; }
+.cs-longedit textarea { margin: 0 4px; padding: 8px 10px; border-radius: 8px; border: 0; outline: none; resize: vertical; font: inherit; font-size: 13px; line-height: 1.45; color: var(--text); background: var(--frost); box-shadow: inset 0 0 0 1px var(--line); min-height: 44px; }
+.cs-longedit textarea:focus, .cs-pop-input:focus { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.cs-cols-wrap { position: relative; flex: none; }
+.cs-cols { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 220px; max-height: 420px; overflow: auto; padding: 6px; border-radius: 10px; background: var(--panel); box-shadow: 0 0 0 1px var(--line), var(--menu-shadow); display: flex; flex-direction: column; }
+.cs-cols label { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 12.5px; border-radius: 6px; cursor: pointer; }
+.cs-cols label:hover { background: var(--row-hov); }
+.cs-cols-reset { margin-top: 4px; padding: 6px 8px; font-size: 11.5px; color: var(--text-3); text-align: left; border-top: 1px solid var(--line); }
+.cs-link-btn { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--accent); text-transform: none; letter-spacing: 0; }
+.cs-rawbox summary { cursor: pointer; font-size: 11.5px; color: var(--text-3); font-weight: 600; padding: 4px 0; }
+.cs-rawbox[open] summary { margin-bottom: 6px; }
+.cs-msg.sys { opacity: 0.7; }
+.cs-rec-sec .cs-fields th { width: 112px; }
+.cs-fields td .cs-null { font-style: normal; }

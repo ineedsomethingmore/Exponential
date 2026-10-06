@@ -72,39 +72,101 @@ const allCount = await evaluate(`document.querySelector('.cs-filter span').textC
 check('All filter count matches', Number(allCount) === expected, allCount);
 await shot('1-overview-sheet');
 
-// 2. type into Notes on row 1, Enter commits
-const notesCol = await evaluate(`[...document.querySelectorAll('.cs-grid thead th')].findIndex((th) => th.textContent.startsWith('Notes')) - 1`);
+// 2. type into Notes on row 1: typing opens the long-text editor with that letter; Save commits
 const firstId = await evaluate(`document.querySelector('.cs-grid tbody td[data-cell]').dataset.cell.split(':')[0]`);
-await click(`td[data-cell="${firstId}:${notesCol}"]`);
+const cellSel = (key) => `td[data-cell="${firstId}:${key}"]`;
+await click(cellSel('notes'));
 await key('C', 'KeyC', 'C');
+await sleep(150);
 await send('Input.insertText', { text: 'alled, visiting Friday' });
 await sleep(100);
 await shot('2-editing-notes');
-await key('Enter', 'Enter', '\r');
+await click('.cs-pop .cs-menu-foot .pill');
 await sleep(300);
-const w2 = await evaluate(`JSON.stringify(window.__writes)`);
-const writes = JSON.parse(w2);
+const writes = JSON.parse(await evaluate(`JSON.stringify(window.__writes)`));
 const upd = writes.find((x) => x.table === 'crm_people' && x.op === 'update');
 const aud = writes.find((x) => x.table === 'crm_audit' && x.op === 'insert');
 check('typing writes one column', !!upd && Object.keys(upd.patch).length === 1 && upd.patch.notes === 'Called, visiting Friday', JSON.stringify(upd?.patch));
 check('the edit leaves an audit line', !!aud && aud.row.surface === 'app:sheet' && aud.row.actor_user_id === 'u-iain' && aud.row.after.notes === 'Called, visiting Friday', JSON.stringify(aud?.row?.after));
-const cellText = await evaluate(`document.querySelector('td[data-cell="${firstId}:${notesCol}"]').textContent`);
+const cellText = await evaluate(`document.querySelector('${cellSel('notes')}').textContent`);
 check('the cell shows the stored value', cellText === 'Called, visiting Friday', cellText);
 
-// 3. Stage select: Enter opens, pick "engaged"; then Escape on another edit writes nothing
-const stageCol = await evaluate(`[...document.querySelectorAll('.cs-grid thead th')].findIndex((th) => th.textContent.startsWith('Customer stage')) - 1`);
-await click(`td[data-cell="${firstId}:${stageCol}"]`);
+// 3. Stage: Enter opens a menu of the person's type's stages; choosing writes it
+await click(cellSel('_stage'));
 await key('Enter', 'Enter', '\r');
-await evaluate(`(() => { const s = document.querySelector('select.cs-edit'); const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; set.call(s, 'engaged'); s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+await sleep(150);
+await click('.cs-pop button[data-v="customer:engaged"]');
 await sleep(300);
 const stage = await evaluate(`window.__db.crm_people.find((p) => p.id === ${JSON.stringify(firstId)}).customer_stage`);
-check('the Stage select writes the value', stage === 'engaged', stage);
+check('the Stage menu writes the stage', stage === 'engaged', stage);
+check('and the cell reads In conversation', (await evaluate(`document.querySelector('${cellSel('_stage')}').textContent`)) === 'In conversation');
+
+// 3a. Type: several allowed, saved together
+await click(cellSel('types'));
+await key('Enter', 'Enter', '\r');
+await sleep(150);
+await evaluate(`[...document.querySelectorAll('.cs-pop .cs-menu-check')].find((l) => l.textContent === 'Investor').querySelector('input').click()`);
+await click('.cs-pop .cs-menu-foot .pill');
+await sleep(300);
+const types = await evaluate(`JSON.stringify(window.__db.crm_people.find((p) => p.id === ${JSON.stringify(firstId)}).types)`);
+check('Type saves several types', types === '["customer","investor"]', types);
+
+// 3b0. Due: a quick date writes tomorrow
+await click(cellSel('next_action_due'));
+await key('Enter', 'Enter', '\r');
+await sleep(150);
+await evaluate(`[...document.querySelectorAll('.cs-pop .cs-quick button')].find((b) => b.textContent === 'Tomorrow').click()`);
+await sleep(300);
+const due = await evaluate(`window.__db.crm_people.find((p) => p.id === ${JSON.stringify(firstId)}).next_action_due`);
+const tmr = await evaluate(`(() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })()`);
+check('Due takes a quick date', due === tmr, `${due} vs ${tmr}`);
+
+// 3b1. Next step: kind and text are saved together; Escape on a new edit writes nothing
+await click(cellSel('next_action'));
+await key('Enter', 'Enter', '\r');
+await sleep(150);
+await evaluate(`[...document.querySelectorAll('.cs-pop .cs-quick button')].find((b) => b.textContent === 'Call').click()`);
+await evaluate(`(() => { const t = document.querySelector('.cs-pop textarea'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(t, 'Call about the visit'); t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+await sleep(100);
+await click('.cs-pop .cs-menu-foot .pill');
+await sleep(300);
+const step = await evaluate(`JSON.stringify((({ next_action, next_action_kind }) => ({ next_action, next_action_kind }))(window.__db.crm_people.find((p) => p.id === ${JSON.stringify(firstId)})))`);
+check('Next step saves its text and kind together', step === '{"next_action":"Call about the visit","next_action_kind":"call"}', step);
 const before = await evaluate(`window.__writes.length`);
-await click(`td[data-cell="${firstId}:3"]`); // Next action
+await click(cellSel('next_action'));
 await key('X', 'KeyX', 'X');
+await sleep(150);
 await key('Escape', 'Escape');
 await sleep(200);
 check('Escape cancels without a write', (await evaluate(`window.__writes.length`)) === before);
+
+// 3b2. Peek: a cut-off value shows in full under the selected cell
+const longId = await evaluate(`(() => { const p = window.__db.crm_people.find((x) => (window.__db.crm_submissions.find((s) => s.person_id === x.id && (s.text_body || '').length > 60))); return p && p.id; })()`);
+await click(`td[data-cell="${longId}:_said"]`);
+await sleep(200);
+const peek = await evaluate(`(document.querySelector('.cs-peek') || {}).textContent || ''`);
+check('a cut-off value shows in full on one click', peek.length > 60, peek.slice(0, 60));
+await shot('2c-peek');
+
+// 3b3. Resize: dragging a header edge widens the column and is remembered
+const w0 = await evaluate(`document.querySelector('${cellSel('notes')}').getBoundingClientRect().width`);
+await sleep(100);
+const hc = await evaluate(`(() => { const th = [...document.querySelectorAll('.cs-grid thead th')].find((t) => t.textContent.startsWith('Notes')); th.scrollIntoView({ inline: 'center', block: 'nearest' }); const r = th.querySelector('.cs-resize').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: hc[0], y: hc[1], button: 'left', clickCount: 1 });
+for (let k = 1; k <= 8; k++) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hc[0] + k * 15, y: hc[1], button: 'left', buttons: 1 });
+await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hc[0] + 120, y: hc[1], button: 'left', clickCount: 1 });
+await sleep(200);
+const w1 = await evaluate(`document.querySelector('${cellSel('notes')}').getBoundingClientRect().width`);
+const saved = await evaluate(`(() => { try { return JSON.parse(localStorage.getItem('exponential-crm-view-v1')).widths.notes; } catch (e) { return null; } })()`);
+check('dragging a header edge resizes and is remembered', w1 > w0 + 80 && saved > 0, `${w0} -> ${w1}, saved ${saved}`);
+
+// 3b4. Columns: an optional column can be shown
+await click('.cs-cols-wrap > button');
+await evaluate(`[...document.querySelectorAll('.cs-cols label')].find((l) => l.textContent === 'Company').querySelector('input').click()`);
+await sleep(200);
+check('an optional column can be shown', (await evaluate(`[...document.querySelectorAll('.cs-grid thead th')].some((t) => t.textContent.startsWith('Company'))`)) === true);
+await evaluate(`[...document.querySelectorAll('.cs-cols label')].find((l) => l.textContent === 'Company').querySelector('input').click()`);
+await click('.cs-cols-wrap > button');
 
 // 3b. the chat box sends with the member's token and shows the agent's reply and what changed
 await click('.cs-overview .cs-chat-in textarea');
@@ -129,6 +191,7 @@ await sleep(400);
 const rec = await evaluate(`JSON.stringify({ open: !!document.querySelector('.cs-record'), findings: document.querySelectorAll('.cs-findings li').length, raw: document.querySelectorAll('.cs-raw tr').length, timeline: document.querySelectorAll('.cs-msg').length })`);
 const r = JSON.parse(rec);
 check('the record opens with research and every column', r.open && r.findings > 0 && r.raw > 40, rec);
+check('no raw ISO timestamps in the record', !(await evaluate(`/\\d{4}-\\d{2}-\\d{2}T\\d{2}:/.test([...document.querySelectorAll('.cs-record .cs-rec-sec')].filter((x) => !x.querySelector('.cs-raw')).map((x) => x.innerText).join(' '))`)));
 await shot('3-record');
 // the record lists changes, and Undo puts the earlier value back (recorded as a new edit)
 await key('Escape', 'Escape');

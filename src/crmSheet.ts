@@ -90,18 +90,21 @@ export function subscribeSheet(teamId: string, cloud: boolean, h: {
   return () => { supabase.removeChannel(ch); };
 }
 
-/** One column of one person, written straight to the row, plus its audit line. Returns the row as stored. */
-export async function writeCell(teamId: string, me: string, person: SheetPerson, col: string, value: unknown): Promise<SheetPerson> {
-  const { data, error } = await supabase.from('crm_people').update({ [col]: value }).eq('id', person.id).select('*').single();
+/** Columns of one person written straight to the row (usually one; a stage set on an untyped person also adds the type),
+ *  plus one audit line with the before and after. Returns the row as stored. */
+export async function writePatch(teamId: string, me: string, person: SheetPerson, patch: Record<string, unknown>): Promise<SheetPerson> {
+  const { data, error } = await supabase.from('crm_people').update(patch).eq('id', person.id).select('*').single();
   if (error) throw error;
+  const before: Record<string, unknown> = {};
+  for (const k of Object.keys(patch)) before[k] = person[k] ?? null;
   // The audit is a record, not a gate: the edit stands even if this line cannot be written.
   const audit = await supabase.from('crm_audit').insert({
-    team_id: teamId, actor_user_id: me, surface: 'app:sheet', tool: 'sheet_edit', target_table: 'crm_people', target_id: person.id,
-    before: { [col]: person[col] ?? null }, after: { [col]: value ?? null },
+    team_id: teamId, actor_user_id: me, surface: 'app:sheet', tool: 'sheet_edit', target_table: 'crm_people', target_id: person.id, before, after: patch,
   });
   if (audit.error) console.warn('[crm] audit line not written:', audit.error.message);
   return data as SheetPerson;
 }
+export const writeCell = (teamId: string, me: string, person: SheetPerson, col: string, value: unknown) => writePatch(teamId, me, person, { [col]: value });
 
 export interface RecordDetail { interactions: SheetInteraction[]; submissions: { id: string; channel: string; received_at: string; text_body: string | null; source_url: string | null }[]; reservations: SheetReservation[] }
 export async function fetchRecord(personId: string, cloud: boolean): Promise<RecordDetail> {
@@ -152,4 +155,16 @@ export const notContacted = (p: SheetPerson) => isLive(p) && !p.last_outbound_at
 /** We wrote, they answered, and the next word is ours. */
 export const ourTurn = (p: SheetPerson) => isLive(p) && !!p.last_outbound_at && ms(p.last_inbound_at) > ms(p.last_outbound_at);
 export const dueBy = (p: SheetPerson, day: string) => isLive(p) && !!p.next_action_due && p.next_action_due <= day;
+/** Where the person came from, in words: X, Instagram, Google, LinkedIn, a site, or Direct (from the landing referrer,
+ *  or the channel recorded when the lead lived in Twenty). */
+export const cameFrom = (p: SheetPerson): string => {
+  const a = (p.attribution ?? {}) as Record<string, unknown>;
+  const touch = (k: string) => ((a[k] as { referrer?: string } | undefined)?.referrer ?? '');
+  const recorded = typeof a.channel === 'string' ? a.channel : '';
+  const ref = String(touch('firstTouch') || touch('lastTouch') || a.referrer || '').toLowerCase();
+  const via = /t\.co|twitter|x\.com/.test(ref) ? 'X' : /instagram/.test(ref) ? 'Instagram' : /google\./.test(ref) ? 'Google' : /linkedin/.test(ref) ? 'LinkedIn'
+    : /youtube|youtu\.be/.test(ref) ? 'YouTube' : /facebook|fb\./.test(ref) ? 'Facebook' : ref ? ref.replace(/^https?:\/\/(www\.)?/, '').split('/')[0] : recorded ? recorded.charAt(0) + recorded.slice(1).toLowerCase() : '';
+  const how: Record<string, string> = { website_form: 'Hangar form', website_message: 'Message box', preorder_page: 'Pre-order', stripe: 'Pre-order', x_reply: 'X reply', x_dm: 'X DM', email: 'Email', agent_dump: 'Added by the team', manual: 'Added by the team', import_twenty: 'Hangar form' };
+  return [how[p.source_channel] ?? 'Other', via && via !== 'Unknown' ? `via ${via}` : ''].filter(Boolean).join(' ');
+};
 export const arrivedWithin = (p: SheetPerson, hours: number) => !p.merged_into && !(p.flags ?? []).includes('test') && Date.now() - ms(p.source_at) < hours * 3_600_000;
