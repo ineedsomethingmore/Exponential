@@ -108,6 +108,9 @@ const loadView = (): { widths: Record<string, number>; visible: string[] } => {
 };
 const saveView = (v: { widths: Record<string, number>; visible: string[] }) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch { /* no storage */ } };
 
+/* The four counters on the left (iain, 7 Oct: the pills above the sheet went, these stay) filter the sheet. */
+type Filter = 'all' | 'due' | 'ourTurn' | 'new' | 'notContacted';
+const FILTER_NAMES: Record<Filter, string> = { all: 'Everyone', due: 'Due', ourTurn: 'Our turn', new: 'New 48h', notContacted: 'Not contacted' };
 type TypeFilter = 'any' | TypeKey | 'other' | 'none';
 const TYPE_FILTERS: { k: TypeFilter; t: string }[] = [
   { k: 'any', t: 'Type filter' }, { k: 'customer', t: 'Customers' }, { k: 'investor', t: 'Investors' }, { k: 'contributor', t: 'Contributors' }, { k: 'other', t: 'Other' }, { k: 'none', t: 'No type yet' },
@@ -178,6 +181,7 @@ export function CrmPage(p: Props) {
   const [data, setData] = useState<SheetData>({ people: [], said: {}, loaded: false });
   const [loadError, setLoadError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
+  const [filter, setFilter] = useState<Filter>('all');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('any');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: 'source_at', dir: -1 });
@@ -227,14 +231,23 @@ export function CrmPage(p: Props) {
     const col = COL[sort.key] ?? COLS[0];
     const hit = (x: SheetPerson) => !q || [x.name, x.email_normalized, x.company, x.job_title, x.x_handle, x.phone_as_typed, x.notes, x.next_action, x.enrichment_headline, data.said[x.id]?.text]
       .some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
-    return visible.filter((x) => typePass(x, typeFilter) && hit(x)).sort((a, b) => {
+    const pass = (x: SheetPerson) =>
+      filter === 'all' ? true : filter === 'due' ? dueBy(x, today) : filter === 'ourTurn' ? ourTurn(x) : filter === 'new' ? arrivedWithin(x, 48) : notContacted(x);
+    return visible.filter((x) => pass(x) && typePass(x, typeFilter) && hit(x)).sort((a, b) => {
       const ka = sortKey(a, col, ctx), kb = sortKey(b, col, ctx);
       if (ka === '' && kb !== '') return 1; // empty cells sink, whichever way the sort runs
       if (kb === '' && ka !== '') return -1;
       if (ka === kb) return +new Date(b.source_at) - +new Date(a.source_at);
       return (ka < kb ? -1 : 1) * sort.dir;
     });
-  }, [visible, typeFilter, query, sort, data.said]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [visible, filter, typeFilter, query, sort, data.said, today]); // eslint-disable-line react-hooks/exhaustive-deps
+  const counts = useMemo(() => ({
+    all: visible.length,
+    due: visible.filter((x) => dueBy(x, today)).length,
+    ourTurn: visible.filter(ourTurn).length,
+    new: visible.filter((x) => arrivedWithin(x, 48)).length,
+    notContacted: visible.filter(notContacted).length,
+  }), [visible, today]);
 
   /* ── writing, and this session's undo / redo ── */
   type Op = { t: 'person'; id: string; before: Record<string, unknown>; after: Record<string, unknown> } | { t: 'said'; id: string; before: string | null; after: string | null };
@@ -427,7 +440,8 @@ export function CrmPage(p: Props) {
       <Overview data={data} visible={visible} today={today} cloud={cloud} teamId={teamId} ctx={ctx} onError={p.onError}
         scope={record ? { id: record.id, name: nameOf(record) } : null}
         onApplied={(t) => remember(chatOps(t))} onUndoTurn={(t) => replay(chatOps(t), 'undo')}
-        onPerson={(id) => { setTypeFilter('any'); setQuery(''); openRecord(id); }} />
+        counts={counts} filter={filter} onFilter={(f) => { setFilter(f); setQuery(''); }}
+        onPerson={(id) => { setFilter('all'); setTypeFilter('any'); setQuery(''); openRecord(id); }} />
       <section className="cs-main">
         <header className="cs-bar">
           <input className="cs-search" placeholder="Search name, email, company, notes…" value={query} onChange={(e) => setQuery(e.target.value)}
@@ -436,6 +450,7 @@ export function CrmPage(p: Props) {
             {TYPE_FILTERS.map((t) => <option key={t.k} value={t.k}>{t.k === 'any' ? t.t : `${t.t} (${visible.filter((x) => typePass(x, t.k)).length})`}</option>)}
           </select>
           <span className="cs-count">{rows.length === visible.length ? `${visible.length} people` : `${rows.length} of ${visible.length}`}</span>
+          {filter !== 'all' && <button className="cs-filter on" title="Show everyone" onClick={() => setFilter('all')}>{FILTER_NAMES[filter]}<span>×</span></button>}
           <span className="panel-spacer" />
           <div className="cs-cols-wrap">
             <button className={`cs-filter${colsOpen ? ' on' : ''}`} onClick={() => setColsOpen((o) => !o)}>Columns<span>{cols.length}</span></button>
@@ -506,8 +521,9 @@ export function CrmPage(p: Props) {
 
 /* ─── the daily overview ────────────────────────────── */
 
-function Overview({ data, visible, today, cloud, teamId, ctx, scope, onError, onPerson, onApplied, onUndoTurn }: {
+function Overview({ data, visible, today, cloud, teamId, ctx, scope, counts, filter, onFilter, onError, onPerson, onApplied, onUndoTurn }: {
   data: SheetData; visible: SheetPerson[]; today: string; cloud: boolean; teamId: string; ctx: Ctx; scope: { id: string; name: string } | null;
+  counts: Record<Filter, number>; filter: Filter; onFilter: (f: Filter) => void;
   onError: (m: string) => void; onPerson: (id: string) => void; onApplied: (t: ChatTurn) => void; onUndoTurn: (t: ChatTurn) => void;
 }) {
   // Each person appears once, in the first section that fits: what is due, whose turn it is, who is new, who is waiting.
@@ -520,15 +536,24 @@ function Overview({ data, visible, today, cloud, teamId, ctx, scope, onError, on
   const waiting = take(visible.filter(notContacted).sort(byRecent));
   const date = new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
   const step = (x: SheetPerson) => [x.next_action_kind ? optLabel(STEPS, x.next_action_kind) : '', one(x.next_action, 90)].filter(Boolean).join(': ');
+  const stats: { k: Filter; t: string }[] = [{ k: 'new', t: 'New 48h' }, { k: 'notContacted', t: 'Not contacted' }, { k: 'ourTurn', t: 'Our turn' }, { k: 'due', t: 'Due' }];
   return (
     <aside className="cs-overview">
       <div className="cs-ov-head"><h1>Today</h1><span>{date}</span></div>
+      <div className="cs-stats">
+        {stats.map((st) => (
+          <button key={st.k} className={`cs-stat${filter === st.k ? ' on' : ''}${st.k === 'due' && counts.due ? ' hot' : ''}`} onClick={() => onFilter(filter === st.k ? 'all' : st.k)}
+            title={filter === st.k ? 'Show everyone in the sheet' : `Show only ${st.t} in the sheet`}>
+            <strong>{data.loaded ? counts[st.k] : '–'}</strong><span>{st.t}</span>
+          </button>
+        ))}
+      </div>
       <div className="cs-ov-scroll">
         {!data.loaded && <div className="cs-empty">Loading…</div>}
-        <OvSection title="Due" list={due} limit={6} line={(x) => step(x) || 'Next step due'} meta={(x) => fmtDay(x.next_action_due)} metaHot={(x) => (x.next_action_due ?? '') < today} onPerson={onPerson} />
-        <OvSection title="Our turn" hint="They answered; the next word is ours" list={turn} limit={6} line={(x) => one(data.said[x.id]?.text, 90) || one(who(x), 90)} meta={(x) => ago(x.last_inbound_at)} onPerson={onPerson} />
-        <OvSection title="New" hint="Arrived in the last 48 hours" list={fresh} limit={6} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} />
-        <OvSection title="Not contacted yet" list={waiting} limit={6} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} />
+        <OvSection title="Due" list={due} limit={6} line={(x) => step(x) || 'Next step due'} meta={(x) => fmtDay(x.next_action_due)} metaHot={(x) => (x.next_action_due ?? '') < today} onPerson={onPerson} onMore={() => onFilter('due')} />
+        <OvSection title="Our turn" hint="They answered; the next word is ours" list={turn} limit={6} line={(x) => one(data.said[x.id]?.text, 90) || one(who(x), 90)} meta={(x) => ago(x.last_inbound_at)} onPerson={onPerson} onMore={() => onFilter('ourTurn')} />
+        <OvSection title="New" hint="Arrived in the last 48 hours" list={fresh} limit={6} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} onMore={() => onFilter('new')} />
+        <OvSection title="Not contacted yet" list={waiting} limit={6} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} onMore={() => onFilter('notContacted')} />
         {data.loaded && !due.length && !turn.length && !fresh.length && !waiting.length && <div className="cs-empty">Nobody is waiting on us.</div>}
       </div>
       {cloud && <ChatPanel teamId={teamId} people={data.people} ctx={ctx} scope={scope} onError={onError} onPerson={onPerson} onApplied={onApplied} onUndoTurn={onUndoTurn} />}
@@ -536,22 +561,21 @@ function Overview({ data, visible, today, cloud, teamId, ctx, scope, onError, on
   );
 }
 
-function OvSection({ title, hint, list, limit, line, meta, metaHot, onPerson }: {
+function OvSection({ title, hint, list, limit, line, meta, metaHot, onPerson, onMore }: {
   title: string; hint?: string; list: SheetPerson[]; limit: number; line: (x: SheetPerson) => string; meta: (x: SheetPerson) => string;
-  metaHot?: (x: SheetPerson) => boolean; onPerson: (id: string) => void;
+  metaHot?: (x: SheetPerson) => boolean; onPerson: (id: string) => void; onMore: () => void;
 }) {
-  const [all, setAll] = useState(false);
   if (!list.length) return null;
   return (
     <section className="cs-ov-sec">
       <h2 title={hint}>{title} <span>{list.length}</span></h2>
-      {list.slice(0, all ? list.length : limit).map((x) => (
+      {list.slice(0, limit).map((x) => (
         <button key={x.id} className="cs-ov-row" onClick={() => onPerson(x.id)}>
           <span className="cs-ov-main"><b>{nameOf(x)}</b><em>{line(x) || x.email_normalized || ''}</em></span>
           <span className={`cs-ov-meta${metaHot?.(x) ? ' hot' : ''}`}>{meta(x)}</span>
         </button>
       ))}
-      {list.length > limit && <button className="cs-ov-more" onClick={() => setAll((v) => !v)}>{all ? 'Show fewer' : `Show all ${list.length}`}</button>}
+      {list.length > limit && <button className="cs-ov-more" onClick={onMore}>All {list.length} in the sheet →</button>}
     </section>
   );
 }
