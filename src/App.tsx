@@ -258,6 +258,8 @@ export default function App() {
   const [mTeamsOpen, setMTeamsOpen] = useState(false);
   const chatBackRef = useRef<(() => boolean) | null>(null);
   const crmBackRef = useRef<(() => boolean) | null>(null);
+  // While the CRM page is mounted it owns ⌘Z / ⌘⇧Z (its own edits, not the plan's history); null otherwise.
+  const crmUndoRef = useRef<((kind: 'undo' | 'redo') => void) | null>(null);
   // The CRM item appears only for a team whose crm_people table has rows (one head count per team switch),
   // so the other teams on Exponential never see an empty CRM.
   const [crmTeam, setCrmTeam] = useState<string | null>(null);
@@ -467,6 +469,7 @@ export default function App() {
     lastEditCmd.current = t;
     const el = document.activeElement as HTMLElement | null;
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) { document.execCommand(kind); return; }
+    if (crmUndoRef.current) { crmUndoRef.current(kind); return; }
     if (kind === 'undo') undo(); else redo();
   }, [undo, redo]);
   useEffect(() => window.exponential?.onEditCommand?.(editCommand), [editCommand]);
@@ -493,6 +496,7 @@ export default function App() {
         return;
       }
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (crmUndoRef.current) return; // the CRM sheet owns Backspace (it clears a cell), never the plan's selection
       if (e.key === 'Backspace' || e.key === 'Delete') {
         // A block selection in the notes editor owns Backspace (it blurs the input, so
         // the focus check above doesn't catch it) — deleting blocks must not delete the item.
@@ -1285,6 +1289,7 @@ export default function App() {
             onClose={() => setLeftPanel(null)}
             onError={(m) => { setSaveError(m); window.setTimeout(() => setSaveError(null), 6000); }}
             backRef={crmBackRef}
+            undoRef={crmUndoRef}
           />
         )}
         <div

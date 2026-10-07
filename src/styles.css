@@ -1446,7 +1446,7 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
   border-radius: var(--radius-xl); box-shadow: 0 0 0 1.5px var(--edge), var(--shadow);
   display: flex; flex-direction: column; min-height: 0; overflow: hidden; position: relative;
 }
-.cs-overview { flex: none; width: 320px; }
+.cs-overview { flex: none; width: 360px; }
 .cs-main { flex: 1; min-width: 0; }
 .cs-empty { color: var(--text-3); font-size: 13px; padding: 16px 22px; line-height: 1.45; }
 .cs-null { color: var(--text-3); font-style: normal; }
@@ -1462,7 +1462,7 @@ body.cursor-grabbing, body.cursor-grabbing * { cursor: grabbing !important; }
 .cs-stat:hover { background: var(--row-hov); }
 .cs-stat.on { box-shadow: inset 0 0 0 1.5px var(--accent); }
 .cs-stat.hot strong { color: var(--today); }
-.cs-ov-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 16px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.cs-ov-scroll { flex: 0 1 auto; max-height: 36%; min-height: 0; overflow-y: auto; padding: 0 8px 12px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .cs-ov-sec { padding-top: 8px; }
 .cs-ov-sec h2 { display: flex; align-items: center; gap: 6px; padding: 8px 12px 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-3); }
 .cs-ov-sec h2 span, .cs-rec-sec h3 span { text-transform: none; font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: var(--soft); letter-spacing: 0; }
@@ -1582,18 +1582,49 @@ select.cs-edit { padding: 0 4px; }
 
 @media (max-width: 980px) {
   .crm.cs { flex-direction: column; }
-  .cs-overview { width: auto; max-height: 42%; }
-  .cs-stats { grid-template-columns: repeat(4, 1fr); }
+  .cs-overview { width: auto; max-height: 50%; }
 }
 .shell.phone .cs-bar { flex-wrap: wrap; }
 .shell.phone .cs-search { flex-basis: 100%; width: 100%; }
 
 /* CRM v2: type filter, chat box, change history */
 .cs-type { padding: 6px 8px; border-radius: 9px; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); border: 0; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--text-2); outline: none; flex: none; }
-.cs-chat { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--line); max-height: 48%; min-height: 0; }
-.cs-chat.compact { border-top: 0; border-bottom: 1px solid var(--line); padding: 12px 20px; max-height: none; }
-.cs-chat-log { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; user-select: text; -webkit-user-select: text; }
-.cs-chat.compact .cs-chat-log { max-height: 260px; }
+.cs-type.on { color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.cs-count { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* the chat with the CRM agent: fills the overview below today's list */
+.cs-chat { flex: 1 1 0; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--line); min-height: 240px; }
+.cs-chat-head { display: flex; align-items: baseline; gap: 8px; padding: 2px 2px 0; flex: none; min-width: 0; white-space: nowrap; }
+.cs-chat-head b { flex: none; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-2); }
+.cs-chat-head span { flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; }
+.cs-chat-head .cs-link-btn { flex: none; white-space: nowrap; }
+.cs-chat-log { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 2px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; user-select: text; -webkit-user-select: text; }
+.cs-chat-empty { margin: auto 0; padding: 6px 4px; color: var(--text-3); font-size: 12px; line-height: 1.5; display: flex; flex-direction: column; gap: 8px; }
+.cs-chat-empty .ex { color: var(--text-2); font-style: italic; }
+.cs-turn-about { display: block; font-size: 10.5px; font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+.cs-turn-steps { display: block; margin-top: 4px; font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.cs-turn.busy p { color: var(--text-3); font-size: 12px; }
+.cs-turn.busy p.done::before { content: '✓ '; color: var(--text-3); }
+.cs-turn.busy p.now { color: var(--text-2); }
+.cs-turn.busy p.now::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 7px; vertical-align: 1px; animation: cs-pulse 1s ease-in-out infinite; }
+@keyframes cs-pulse { 50% { opacity: 0.25; } }
+.cs-applied { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.cs-applied.undone { opacity: 0.5; }
+.cs-applied.undone .cs-applied-row span:last-child { text-decoration: line-through; }
+.cs-applied-name { font-size: 12px; font-weight: 650; color: var(--text); text-align: left; padding: 0; }
+.cs-applied-name:hover { color: var(--accent); }
+.cs-applied-row { display: flex; gap: 8px; font-size: 11.5px; color: var(--text-2); line-height: 1.4; }
+.cs-applied-row span:first-child { flex: none; width: 82px; color: var(--text-3); font-weight: 600; }
+.cs-applied-row s { color: var(--text-3); }
+.cs-applied .cs-undo { align-self: flex-start; padding: 2px 8px; box-shadow: inset 0 0 0 1px var(--line); }
+.cs-asks { margin-top: 6px; padding: 6px 8px; border-radius: 8px; background: color-mix(in srgb, #ff9f0a 12%, transparent); display: flex; flex-direction: column; gap: 3px; }
+.cs-asks p { font-weight: 600; color: var(--text); }
+.cs-asks em { font-style: normal; font-size: 10.5px; color: var(--text-3); }
+.cs-chat-scope { flex: none; display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-2); padding: 0 2px; }
+.cs-chat-scope b { font-weight: 650; color: var(--accent); }
+.cs-chat-scope button { font-size: 13px; line-height: 1; color: var(--text-3); padding: 0 4px; }
+.cs-chat-scope button:hover { color: var(--text); }
+.cs-rec-hint { padding: 12px 20px 0; }
+.cs-chip.t-other { background: var(--soft); color: var(--text-2); }
 .cs-turn { padding: 7px 10px; border-radius: 10px; font-size: 12.5px; line-height: 1.45; max-width: 92%; }
 .cs-turn p { white-space: pre-wrap; }
 .cs-turn.member { align-self: flex-end; background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }

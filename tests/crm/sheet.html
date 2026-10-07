@@ -42,11 +42,11 @@ const people = first.map((f, i) => {
   return {
     id: `p-${String(i + 1).padStart(3, '0')}`, team_id: TEAM, name: `${f} ${last[i % last.length]}`, first_name: f, last_name: last[i % last.length],
     email_normalized: `${f.toLowerCase()}.${i}@example.test`, emails: [`${f.toLowerCase()}.${i}@example.test`], phone_as_typed: i % 3 ? `+1 415 555 01${String(i).padStart(2, '0')}` : null, phone_e164: null,
-    x_user_id: null, x_handle: i % 5 === 0 ? `${f.toLowerCase()}_flies` : null, linkedin_url: i % 4 === 2 ? `https://www.linkedin.com/in/${f.toLowerCase()}-example` : null,
-    company: cos[i % cos.length], job_title: titles[i % titles.length], location_text: ['San Francisco', 'Austin, TX', 'Seoul', null, 'Copenhagen'][i % 5], country: null, timezone: null,
-    types: i % 6 === 1 ? ['customer', 'investor'] : ['customer'], contributor_kind: null,
+    x_handle: i % 5 === 0 ? `${f.toLowerCase()}_flies` : null, linkedin_url: i % 4 === 2 ? `https://www.linkedin.com/in/${f.toLowerCase()}-example` : null,
+    company: cos[i % cos.length], job_title: titles[i % titles.length], location_text: ['San Francisco', 'Austin, TX', 'Seoul', null, 'Copenhagen'][i % 5],
+    types: i % 6 === 1 ? ['customer', 'investor'] : i === 20 ? ['other'] : ['customer'], contributor_kind: null,
     customer_stage: i % 11 === 3 ? 'engaged' : i % 13 === 5 ? 'visiting' : i === 9 ? 'cancelled' : 'lead', investor_stage: i % 6 === 1 ? 'new' : null,
-    investor_firm: null, investor_notes: null, contributor_stage: null, owner_user_id: i % 3 === 0 ? 'u-iain' : i % 3 === 1 ? 'u-rasmus' : null, backup_user_id: null,
+    investor_firm: null, investor_notes: null, contributor_stage: null,
     source_channel: i % 8 === 0 ? 'import_twenty' : 'website_form', source_detail: null, source_at: iso(i < 5 ? i * 6 + 1 : i * 19), attribution: null,
     summary: null, next_action: i % 5 === 2 ? 'Call about a hangar visit date' : i % 7 === 3 ? 'Send the investor deck' : null,
     next_action_due: i % 5 === 2 ? day(i % 2 ? -1 : 0) : i % 7 === 3 ? day(3) : null,
@@ -58,7 +58,7 @@ const people = first.map((f, i) => {
       findings: [{ finding: 'Lists a private pilot certificate in a conference bio (as of 2024).', confidence: 'likely', source: 'https://example.com/bio' }, { finding: 'Founded a company that makes sensor modules.', confidence: 'confirmed', source: 'https://example.com/about' }],
       unknowns: ['Budget', 'Whether they have flown an ultralight'], sources: [{ url: 'https://example.com/bio', what: 'conference bio' }], version: 2 } : null,
     enrichment_headline: heads[i % heads.length], enrichment_summary: heads[i % heads.length] ? 'Synthetic summary for the fixture.' : null,
-    enrichment_lane: null, enrichment_fit: null, enrichment_status: heads[i % heads.length] ? 'done' : i === 35 ? 'skipped' : 'pending', enriched_at: heads[i % heads.length] ? iso(2) : null, enrichment_model: 'gpt-5.6-sol',
+    enrichment_status: heads[i % heads.length] ? 'done' : i === 35 ? 'skipped' : 'pending', enriched_at: heads[i % heads.length] ? iso(2) : null, enrichment_model: 'gpt-5.6-sol',
   };
 });
 const db = {
@@ -82,9 +82,9 @@ function from(table) {
     then(res, rej) { return new Promise((r) => setTimeout(r, 30)).then(run).then(res, rej); },
   };
   function run() {
-    if (st.op === 'insert') { (db[table] ??= []).push({ id: Math.floor(Math.random() * 1e9), at: new Date().toISOString(), ok: true, ...st.patch }); window.__writes.push({ table, op: 'insert', row: st.patch }); return { data: null, error: null }; }
+    if (st.op === 'insert') { const row = { id: Math.floor(Math.random() * 1e9), at: new Date().toISOString(), ok: true, ...st.patch }; (db[table] ??= []).push(row); window.__writes.push({ table, op: 'insert', row: st.patch }); return { data: st.single ? { ...row } : null, error: null }; }
     let hit = (db[table] ?? []).filter((r) => st.filters.every((f) => f(r)));
-    if (st.op === 'update') { for (const r of hit) Object.assign(r, st.patch, { updated_at: new Date().toISOString() }); window.__writes.push({ table, op: 'update', patch: st.patch }); }
+    if (st.op === 'update') { for (const r of hit) Object.assign(r, st.patch, { updated_at: new Date().toISOString() }); window.__writes.push({ table, op: 'update', patch: st.patch, ids: hit.map((r) => r.id) }); }
     for (const [c, asc] of [...st.orders].reverse()) hit = [...hit].sort((a, b) => ((a[c] ?? '') < (b[c] ?? '') ? -1 : (a[c] ?? '') > (b[c] ?? '') ? 1 : 0) * (asc ? 1 : -1));
     if (st.range) hit = hit.slice(st.range[0], st.range[1] + 1);
     if (st.limit) hit = hit.slice(0, st.limit);
@@ -97,18 +97,31 @@ supabase.from = from;
 supabase.channel = () => { const ch = { on(_e, o, cb) { window.__rt[o.table] = cb; return ch; }, subscribe() { return ch; } }; return ch; };
 supabase.removeChannel = async () => {};
 supabase.auth.getSession = async () => ({ data: { session: { access_token: 'fixture-token' } }, error: null });
-// The chat box calls the CRM agent on the website; here a stub applies one change and answers like the server does.
+// The chat calls the CRM agent on the website; here a stub streams like the server (NDJSON: status lines, then the
+// answer). First message: one change applied (before/after). A message containing "Jordan": the agent asks back.
 window.__chat = [];
 const realFetch = window.fetch.bind(window);
 window.fetch = async (url, init = {}) => {
   if (String(url).includes('/api/agent/chat')) {
     const body = JSON.parse(init.body || '{}');
     window.__chat.push({ auth: (init.headers || {}).Authorization, body });
-    const p = db.crm_people[0];
-    p.next_action = 'Send the deck to ' + p.name; p.next_action_kind = 'email';
-    db.crm_audit.push({ id: 9000 + window.__chat.length, team_id: TEAM, target_table: 'crm_people', target_id: p.id, ok: true, at: new Date().toISOString(), surface: 'app:chat', actor_user_id: 'u-iain', before: { next_action: null }, after: { next_action: p.next_action } });
-    if (window.__rt.crm_people) window.__rt.crm_people({ eventType: 'UPDATE', new: { ...p }, old: {} });
-    return new Response(JSON.stringify({ ok: true, reply: 'Noted. Next step set for ' + p.name + '.', applied: [{ person_id: p.id, name: p.name, created: false, changed: ['next_action', 'next_action_kind'] }], questions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const lines = [{ type: 'status', text: 'Reading the CRM' }, { type: 'status', text: 'Thinking (35 people)' }];
+    let done;
+    if (/jordan/i.test(body.message)) {
+      done = { type: 'done', ok: true, reply: 'Two people match that name.', applied: [], questions: ['Jordan Sample (Austin) or Jordan Example (investor)?'] };
+    } else {
+      const p = db.crm_people[0];
+      const before = { next_action: p.next_action ?? null, next_action_kind: p.next_action_kind ?? null };
+      p.next_action = 'Send the deck to ' + p.name; p.next_action_kind = 'email';
+      lines.push({ type: 'status', text: 'Updating ' + p.name });
+      db.crm_audit.push({ id: 9000 + window.__chat.length, team_id: TEAM, target_table: 'crm_people', target_id: p.id, ok: true, at: new Date().toISOString(), surface: 'app:chat', actor_user_id: 'u-iain', before, after: { next_action: p.next_action, next_action_kind: 'email' } });
+      if (window.__rt.crm_people) window.__rt.crm_people({ eventType: 'UPDATE', new: { ...p }, old: {} });
+      done = { type: 'done', ok: true, reply: 'Noted. Next step set for ' + p.name + '.', questions: [],
+        applied: [{ person_id: p.id, name: p.name, created: false, changed: ['next_action', 'next_action_kind'], changes: [{ field: 'next_action', before: before.next_action, after: p.next_action }, { field: 'next_action_kind', before: before.next_action_kind, after: 'email' }] }] };
+    }
+    const enc = new TextEncoder();
+    const stream = new ReadableStream({ async start(c) { for (const l of [...lines, done]) { c.enqueue(enc.encode(JSON.stringify(l) + '\n')); await new Promise((r) => setTimeout(r, 300)); } c.close(); } });
+    return new Response(stream, { status: 200, headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' } });
   }
   return realFetch(url, init);
 };

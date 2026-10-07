@@ -1,6 +1,6 @@
 /* Drives the CRM page fixture (tests/crm/sheet.html, synthetic data, no network) in headless Chrome:
  * screenshots, plus the behaviours that matter, checked against the fixture's in-memory store:
- *   1. the sheet loads every person except test rows, and the overview counts add up;
+ *   1. the sheet loads every person except test rows; no status filters, one type filter; every column editable;
  *   2. typing into a cell writes ONE column to crm_people and ONE crm_audit line (surface app:sheet);
  *   3. a select cell (Stage) writes the chosen value; Escape cancels without a write;
  *   4. a realtime INSERT puts a new person on the sheet without a reload;
@@ -50,11 +50,12 @@ const click = async (sel, count = 1) => {
   }
   await sleep(120);
 };
-const key = async (k, code = k, text) => {
-  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, text, windowsVirtualKeyCode: { Enter: 13, Escape: 27, ArrowDown: 40, ArrowRight: 39, Tab: 9, ' ': 32 }[k] });
-  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code });
+const key = async (k, code = k, text, modifiers = 0) => {
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, text, modifiers, windowsVirtualKeyCode: { Enter: 13, Escape: 27, ArrowDown: 40, ArrowRight: 39, Tab: 9, ' ': 32, z: 90, Z: 90 }[k] });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, modifiers });
   await sleep(120);
 };
+const person = (id) => evaluate(`JSON.stringify(window.__db.crm_people.find((p) => p.id === ${JSON.stringify(id)}))`).then((j) => JSON.parse(j));
 const results = [];
 const check = (name, ok, detail = '') => { results.push({ name, ok, detail }); console.log(ok ? 'PASS' : 'FAIL', name, detail); };
 
@@ -68,8 +69,9 @@ await sleep(400);
 const rows = await evaluate(`document.querySelectorAll('.cs-grid tbody tr').length`);
 const expected = await evaluate(`window.__db.crm_people.filter((p) => !(p.flags || []).includes('test')).length`);
 check('sheet shows every person except test rows', rows === expected, `${rows} rows, ${expected} expected`);
-const allCount = await evaluate(`document.querySelector('.cs-filter span').textContent`);
-check('All filter count matches', Number(allCount) === expected, allCount);
+check('no status filter pills, one type filter labelled as a filter',
+  (await evaluate(`document.querySelectorAll('.cs-filters, .cs-stat').length`)) === 0 && (await evaluate(`document.querySelector('select.cs-type option:checked').textContent`)) === 'Type filter');
+check('every column is editable (no read-only header)', (await evaluate(`document.querySelectorAll('.cs-grid thead th.ro').length`)) === 0);
 await shot('1-overview-sheet');
 
 // 2. type into Notes on row 1: typing opens the long-text editor with that letter; Save commits
@@ -91,6 +93,16 @@ check('the edit leaves an audit line', !!aud && aud.row.surface === 'app:sheet' 
 const cellText = await evaluate(`document.querySelector('${cellSel('notes')}').textContent`);
 check('the cell shows the stored value', cellText === 'Called, visiting Friday', cellText);
 
+// 2a. ⌘Z / Ctrl+Z on the sheet takes the edit back (written to the database), ⌘⇧Z puts it forward again
+await click(cellSel('notes'));
+await key('z', 'KeyZ', undefined, 2);
+await sleep(300);
+const undone = (await person(firstId)).notes;
+await key('z', 'KeyZ', undefined, 2 | 8);
+await sleep(300);
+const redone = (await person(firstId)).notes;
+check('Ctrl+Z undoes the last edit in the database, Ctrl+Shift+Z redoes it', (undone === null || undone === undefined) && redone === 'Called, visiting Friday', `${undone} / ${redone}`);
+
 // 3. Stage: Enter opens a menu of the person's type's stages; choosing writes it
 await click(cellSel('_stage'));
 await key('Enter', 'Enter', '\r');
@@ -110,6 +122,36 @@ await click('.cs-pop .cs-menu-foot .pill');
 await sleep(300);
 const types = await evaluate(`JSON.stringify(window.__db.crm_people.find((p) => p.id === ${JSON.stringify(firstId)}).types)`);
 check('Type saves several types', types === '["customer","investor"]', types);
+
+// 3a1. Other is a type, and the type filter finds it
+await click(cellSel('types'));
+await key('Enter', 'Enter', '\r');
+await sleep(150);
+check('the Type editor offers Other', (await evaluate(`[...document.querySelectorAll('.cs-pop .cs-menu-check')].some((l) => l.textContent === 'Other')`)) === true);
+await key('Escape', 'Escape');
+await sleep(150);
+const otherCount = await evaluate(`[...document.querySelectorAll('select.cs-type option')].find((o) => o.value === 'other').textContent`);
+check('the type filter counts Other', /Other \(1\)/.test(otherCount), otherCount);
+
+// 3a2. the derived columns are editable too: Came from (a label on the attribution), Their message (the submission)
+await click(cellSel('_from'));
+await key('Enter', 'Enter', '\r');
+await sleep(150);
+await evaluate(`(() => { const i = document.querySelector('input.cs-edit'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(i, 'Intro from a friend'); i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+await key('Enter', 'Enter', '\r');
+await sleep(300);
+const from = (await person(firstId)).attribution;
+check('Came from is editable and stored', from && from.label === 'Intro from a friend' && (await evaluate(`document.querySelector('${cellSel('_from')}').textContent`)) === 'Intro from a friend', JSON.stringify(from));
+const saidId = await evaluate(`(window.__db.crm_submissions.find((s) => s.person_id === ${JSON.stringify(firstId)}) || {}).id || null`);
+await click(cellSel('_said'));
+await key('Enter', 'Enter', '\r');
+await sleep(150);
+await evaluate(`(() => { const t = document.querySelector('.cs-pop textarea'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(t, 'Wants a visit in November'); t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+await click('.cs-pop .cs-menu-foot .pill');
+await sleep(400);
+const sub = JSON.parse(await evaluate(`JSON.stringify(window.__db.crm_submissions.filter((s) => s.person_id === ${JSON.stringify(firstId)}).map((s) => ({ id: s.id, text: s.text_body })))`));
+const subAudit = await evaluate(`window.__writes.some((w) => w.table === 'crm_audit' && w.row.target_table === 'crm_submissions' && w.row.after.text_body === 'Wants a visit in November')`);
+check('Their message is editable: the submission text changes, with an audit line', sub.some((x) => x.text === 'Wants a visit in November') && subAudit && (await evaluate(`document.querySelector('${cellSel('_said')}').textContent`)) === 'Wants a visit in November', JSON.stringify(sub) + ' ' + saidId);
 
 // 3b0. Due: a quick date writes tomorrow
 await click(cellSel('next_action_due'));
@@ -168,22 +210,39 @@ check('an optional column can be shown', (await evaluate(`[...document.querySele
 await evaluate(`[...document.querySelectorAll('.cs-cols label')].find((l) => l.textContent === 'Company').querySelector('input').click()`);
 await click('.cs-cols-wrap > button');
 
-// 3b. the chat box sends with the member's token and shows the agent's reply and what changed
+// 3b. the chat: a conversation that shows what the agent is doing, what it changed (with Undo), and its questions
+check('the chat is visible before anything is sent', (await evaluate(`!!document.querySelector('.cs-overview .cs-chat-log .cs-chat-empty')`)) === true);
 await click('.cs-overview .cs-chat-in textarea');
 await send('Input.insertText', { text: 'Called Avery, sending the deck' });
 await key('Enter', 'Enter', '\r');
-for (let i = 0; i < 20; i++) { if (await evaluate(`document.querySelectorAll('.cs-overview .cs-turn.agent:not(.busy)').length`)) break; await sleep(150); }
-const chat = await evaluate(`JSON.stringify({ calls: window.__chat.length, auth: window.__chat[0] && window.__chat[0].auth, msg: window.__chat[0] && window.__chat[0].body.message, reply: (document.querySelector('.cs-overview .cs-turn.agent p') || {}).textContent, applied: (document.querySelector('.cs-overview .cs-turn.agent li') || {}).textContent })`);
+let live = '';
+for (let i = 0; i < 20 && !/Reading the CRM/.test(live); i++) { live = await evaluate(`[...document.querySelectorAll('.cs-overview .cs-turn.busy p')].map((p) => p.textContent).join(' | ')`) || ''; await sleep(60); }
+check('while it works, the chat shows what the agent is doing', /Reading the CRM/.test(live || ''), live);
+await shot('2b0-chat-working');
+for (let i = 0; i < 30; i++) { if (await evaluate(`document.querySelectorAll('.cs-overview .cs-turn.agent:not(.busy)').length`)) break; await sleep(150); }
+const chat = await evaluate(`JSON.stringify({ calls: window.__chat.length, auth: window.__chat[0] && window.__chat[0].auth, msg: window.__chat[0] && window.__chat[0].body.message, stream: window.__chat[0] && window.__chat[0].body.stream, reply: (document.querySelector('.cs-overview .cs-turn.agent p') || {}).textContent, applied: (document.querySelector('.cs-overview .cs-turn.agent .cs-applied') || {}).textContent })`);
 const ch = JSON.parse(chat);
-check('the chat box sends the message with the session token', ch.calls === 1 && ch.auth === 'Bearer fixture-token' && ch.msg === 'Called Avery, sending the deck', chat);
-check('and shows the reply with what changed', /Noted/.test(ch.reply || '') && /Next step/.test(ch.applied || ''), chat);
+check('the chat sends the message with the session token, streaming', ch.calls === 1 && ch.auth === 'Bearer fixture-token' && ch.msg === 'Called Avery, sending the deck' && ch.stream === true, chat);
+check('and shows the reply and each change, before and after', /Noted/.test(ch.reply || '') && /Next step/.test(ch.applied || '') && /→/.test(ch.applied || ''), chat);
+const chatPerson = await evaluate(`window.__db.crm_people[0].id`);
+await evaluate(`document.querySelector('.cs-overview .cs-applied .cs-undo').click()`);
+await sleep(400);
+const afterUndo = await person(chatPerson);
+check('Undo on a chat turn puts the values back', afterUndo.next_action_kind !== 'email' && !/Send the deck/.test(afterUndo.next_action || ''), JSON.stringify({ a: afterUndo.next_action, k: afterUndo.next_action_kind }));
+await click('.cs-overview .cs-chat-in textarea');
+await send('Input.insertText', { text: 'Jordan is coming Friday' });
+await key('Enter', 'Enter', '\r');
+for (let i = 0; i < 30; i++) { if (await evaluate(`document.querySelectorAll('.cs-overview .cs-asks').length`)) break; await sleep(150); }
+const asks = await evaluate(`(document.querySelector('.cs-overview .cs-asks p') || {}).textContent || ''`);
+const conv = await evaluate(`JSON.stringify(window.__chat[1] && window.__chat[1].body.conversation)`);
+check('the agent can ask back, and the earlier turns (with what it changed) travel with the next message', /Jordan Sample/.test(asks) && /Changed: /.test(conv || '') && JSON.parse(conv).length >= 2, asks + ' ' + (conv || '').slice(0, 160));
 await shot('2b-chat');
 
 // 4. realtime insert
 await evaluate(`window.__rt.crm_people({ eventType: 'INSERT', new: { ...window.__db.crm_people[0], id: 'p-new', name: 'Brand New Lead', email_normalized: 'new@example.test', source_at: new Date().toISOString(), last_inbound_at: new Date().toISOString(), last_outbound_at: null, flags: [] }, old: {} })`);
 await sleep(300);
 check('a realtime insert appears without reload', (await evaluate(`[...document.querySelectorAll('.cs-name span')].some((s) => s.textContent === 'Brand New Lead')`)) === true);
-check('and is counted in New', (await evaluate(`document.querySelector('.cs-stat strong').textContent`)) !== '0');
+check('and is listed under New in Today', (await evaluate(`[...document.querySelectorAll('.cs-ov-sec')].some((sec) => sec.querySelector('h2').textContent.startsWith('New') && sec.textContent.includes('Brand New Lead'))`)) === true);
 
 // 5. record
 await click(`tr:has(td[data-cell^="p-002:"]) .cs-open`);
@@ -191,6 +250,7 @@ await sleep(400);
 const rec = await evaluate(`JSON.stringify({ open: !!document.querySelector('.cs-record'), findings: document.querySelectorAll('.cs-findings li').length, raw: document.querySelectorAll('.cs-raw tr').length, timeline: document.querySelectorAll('.cs-msg').length })`);
 const r = JSON.parse(rec);
 check('the record opens with research and every column', r.open && r.findings > 0 && r.raw > 40, rec);
+check('with a record open, the chat is about that person', /About/.test(await evaluate(`(document.querySelector('.cs-chat-scope') || {}).textContent || ''`)));
 check('no raw ISO timestamps in the record', !(await evaluate(`/\\d{4}-\\d{2}-\\d{2}T\\d{2}:/.test([...document.querySelectorAll('.cs-record .cs-rec-sec')].filter((x) => !x.querySelector('.cs-raw')).map((x) => x.innerText).join(' '))`)));
 await shot('3-record');
 // the record lists changes, and Undo puts the earlier value back (recorded as a new edit)
@@ -206,10 +266,12 @@ check('Undo restores the earlier notes', undoBtn && (notesNow === null || notesN
 await shot('3b-history');
 await key('Escape', 'Escape');
 
-// filters
-await click('.cs-stat:nth-child(2)');
+// type filter
+await evaluate(`(() => { const s = document.querySelector('select.cs-type'); const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; set.call(s, 'investor'); s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
 await sleep(200);
-await shot('4-filter-not-contacted');
+const inv = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('.cs-grid tbody tr')].map((tr) => tr.querySelector('td.k-types').textContent))`));
+check('the type filter narrows the sheet to that type', inv.length > 0 && inv.length < 35 && inv.every((t) => t.includes('Investor')), `${inv.length} rows`);
+await shot('4-type-filter');
 
 // dark
 await send('Page.navigate', { url: BASE + '?dark' });

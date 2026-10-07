@@ -5,20 +5,24 @@ import { shortName } from './types';
 import { toISO, todayISO } from './dates';
 import { appIdle } from './idle';
 import {
-  arrivedWithin, askCrm, cameFrom, dueBy, fetchHistory, fetchRecord, fetchSheet, notContacted, ourTurn, subscribeSheet, writePatch,
+  arrivedWithin, askCrm, cameFrom, dueBy, fetchHistory, fetchRecord, fetchSheet, notContacted, ourTurn, subscribeSheet, writePatch, writeSaid,
   type Change, type ChatTurn, type LastWords, type RecordDetail, type SheetData, type SheetPerson,
 } from './crmSheet';
 
 /**
- * CRM: one page. Left, the daily overview and a chat box; right, every person as a spreadsheet, live on crm_people.
- * One CRM, no owner and no assignment: anyone updates anything, by hand or through the chat box; the latest change
- * wins and every change can be undone from the record. The sheet is built for people to read: a short default set
- * of columns (more under "Columns"), human labels, no system values. The database keeps everything else.
+ * CRM: one page. Left, today's list and the chat with the CRM agent; right, every person as a spreadsheet, live on
+ * crm_people. One CRM, no owner and no assignment: anyone updates anything, by hand or through the chat; the latest
+ * change wins. Every column is editable and writes to the database; ⌘Z / ⌘⇧Z undo and redo this session's edits
+ * (the sheet's, the record's and the chat's), and the record lists every change with its own Undo. The sheet is
+ * built for people to read: a short default set of columns (more under "Columns"), human labels, no system values.
  *
  * Sheet, in the manner of Supabase's table editor: drag a header edge to resize (remembered per machine); click a
  * cell to select it, and a cut-off value shows in full under it; double-click or Enter to edit (text in place,
  * long text, choices and dates in a small editor); arrows move, Tab and Enter commit and move, Escape cancels,
- * Backspace clears, Space opens the person's record, ⌘C copies. Read-only cells are grey.
+ * Backspace clears, Space opens the person's record, ⌘C copies.
+ *
+ * The chat is a conversation: the agent shows what it is doing while it works, what it changed (with Undo), and
+ * asks when something is unclear; the next message is read as the answer. Kept per machine, per team.
  */
 
 interface Props {
@@ -30,6 +34,8 @@ interface Props {
   onError: (m: string) => void;
   /** Phone shell: registers a back handler (record → sheet) for the back-swipe guard. */
   backRef?: React.MutableRefObject<(() => boolean) | null>;
+  /** The app's ⌘Z / ⌘⇧Z (Edit menu or keydown) lands here while the CRM is open. */
+  undoRef?: React.MutableRefObject<((kind: 'undo' | 'redo') => void) | null>;
 }
 
 /* ── vocabularies, as people read them ── */
@@ -39,7 +45,7 @@ const INVESTOR: Opt[] = [['new', 'New'], ['intro', 'Intro'], ['meeting', 'Meetin
 const CONTRIBUTOR: Opt[] = [['new', 'New'], ['in_conversation', 'In conversation'], ['active', 'Active'], ['parked', 'Parked']];
 const KINDS: Opt[] = [['partner', 'Partner'], ['engineer', 'Engineer'], ['creator', 'Creator'], ['media', 'Media'], ['other', 'Other']];
 const STEPS: Opt[] = [['email', 'Email'], ['call', 'Call'], ['sms', 'Text'], ['visit', 'Visit'], ['meeting', 'Meeting'], ['reply', 'Reply'], ['other', 'Other']];
-const TYPES: Opt[] = [['customer', 'Customer'], ['investor', 'Investor'], ['contributor', 'Contributor']];
+const TYPES: Opt[] = [['customer', 'Customer'], ['investor', 'Investor'], ['contributor', 'Contributor'], ['other', 'Other']];
 const TAGS: Record<string, string> = { icp1: 'ICP 1', wants_visit: 'Wants a visit', wants_call: 'Wants a call', urgent: 'Urgent', foreign: 'Outside the US', duplicate: 'Duplicate', honeypot: 'Bot trap', honeypot_suspect: 'Possible bot', do_not_contact_request: 'Asked not to be contacted', unsubscribe_request: 'Unsubscribed' };
 const STAGE_OF = { customer: { col: 'customer_stage', opts: CUSTOMER }, investor: { col: 'investor_stage', opts: INVESTOR }, contributor: { col: 'contributor_stage', opts: CONTRIBUTOR } } as const;
 type TypeKey = keyof typeof STAGE_OF;
@@ -51,7 +57,7 @@ const primaryType = (p: SheetPerson): TypeKey | null => {
 };
 
 /* ── columns ── */
-type Kind = 'text' | 'long' | 'link' | 'email' | 'date' | 'stamp' | 'select' | 'stage' | 'types' | 'bool' | 'ro';
+type Kind = 'text' | 'long' | 'link' | 'email' | 'date' | 'stamp' | 'select' | 'stage' | 'types' | 'tags' | 'bool' | 'ro';
 interface Col { key: string; label: string; w: number; kind: Kind; options?: Opt[]; optional?: boolean }
 /** Default columns first; the optional ones live under "Columns" and in every record. */
 const COLS: Col[] = [
@@ -61,13 +67,13 @@ const COLS: Col[] = [
   { key: 'next_action', label: 'Next step', w: 250, kind: 'long' },
   { key: 'next_action_due', label: 'Due', w: 84, kind: 'date' },
   { key: 'last_outbound_at', label: 'Last contact', w: 112, kind: 'stamp' },
-  { key: '_who', label: 'Who', w: 230, kind: 'ro' },
-  { key: '_said', label: 'Their message', w: 240, kind: 'ro' },
+  { key: '_who', label: 'Who', w: 230, kind: 'text' },
+  { key: '_said', label: 'Their message', w: 240, kind: 'long' },
   { key: 'notes', label: 'Notes', w: 220, kind: 'long' },
   { key: 'email_normalized', label: 'Email', w: 200, kind: 'email' },
   { key: 'phone_as_typed', label: 'Phone', w: 130, kind: 'text' },
-  { key: '_from', label: 'Came from', w: 150, kind: 'ro' },
-  { key: 'source_at', label: 'Arrived', w: 84, kind: 'ro' },
+  { key: '_from', label: 'Came from', w: 150, kind: 'text' },
+  { key: 'source_at', label: 'Arrived', w: 84, kind: 'stamp' },
   { key: 'company', label: 'Company', w: 150, kind: 'text', optional: true },
   { key: 'job_title', label: 'Title', w: 150, kind: 'text', optional: true },
   { key: 'location_text', label: 'Location', w: 130, kind: 'text', optional: true },
@@ -81,11 +87,15 @@ const COLS: Col[] = [
   { key: 'contributor_kind', label: 'Contributor kind', w: 124, kind: 'select', options: KINDS, optional: true },
   { key: 'contributor_stage', label: 'Contributor stage', w: 132, kind: 'select', options: CONTRIBUTOR, optional: true },
   { key: 'summary', label: 'Summary', w: 280, kind: 'long', optional: true },
-  { key: '_tags', label: 'Tags', w: 150, kind: 'ro', optional: true },
-  { key: 'last_inbound_at', label: 'Last message', w: 104, kind: 'ro', optional: true },
+  { key: '_tags', label: 'Tags', w: 150, kind: 'tags', optional: true },
+  { key: 'last_inbound_at', label: 'Last message', w: 104, kind: 'stamp', optional: true },
   { key: 'do_not_contact', label: 'Do not contact', w: 108, kind: 'bool', optional: true },
 ];
 const COL = Object.fromEntries(COLS.map((c) => [c.key, c])) as Record<string, Col>;
+/** What a changed column is called where the history, the chat and undo name it. */
+const EXTRA_LABELS: Record<string, string> = { enrichment_headline: 'Who', attribution: 'Came from', flags: 'Tags', emails: 'Emails', first_name: 'First name', last_name: 'Last name', text_body: 'Their message' };
+const labelOf = (k: string) => COL[k]?.label ?? EXTRA_LABELS[k] ?? k.replace(/_/g, ' ');
+const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const editable = (c: Col) => c.kind !== 'ro';
 const inlineText = (c: Col) => c.kind === 'text' || c.kind === 'link' || c.kind === 'email';
 const DEFAULT_VISIBLE = COLS.filter((c) => !c.optional).map((c) => c.key);
@@ -98,13 +108,9 @@ const loadView = (): { widths: Record<string, number>; visible: string[] } => {
 };
 const saveView = (v: { widths: Record<string, number>; visible: string[] }) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch { /* no storage */ } };
 
-type Filter = 'all' | 'due' | 'ourTurn' | 'new' | 'notContacted';
-const FILTERS: { k: Filter; t: string }[] = [
-  { k: 'all', t: 'All' }, { k: 'due', t: 'Due' }, { k: 'ourTurn', t: 'Our turn' }, { k: 'new', t: 'New 48h' }, { k: 'notContacted', t: 'Not contacted' },
-];
-type TypeFilter = 'any' | TypeKey | 'none';
+type TypeFilter = 'any' | TypeKey | 'other' | 'none';
 const TYPE_FILTERS: { k: TypeFilter; t: string }[] = [
-  { k: 'any', t: 'Every type' }, { k: 'customer', t: 'Customers' }, { k: 'investor', t: 'Investors' }, { k: 'contributor', t: 'Contributors' }, { k: 'none', t: 'No type yet' },
+  { k: 'any', t: 'Type filter' }, { k: 'customer', t: 'Customers' }, { k: 'investor', t: 'Investors' }, { k: 'contributor', t: 'Contributors' }, { k: 'other', t: 'Other' }, { k: 'none', t: 'No type yet' },
 ];
 const typePass = (x: SheetPerson, t: TypeFilter) => (t === 'any' ? true : t === 'none' ? !(x.types ?? []).length : (x.types ?? []).includes(t));
 
@@ -148,6 +154,17 @@ function text(p: SheetPerson, c: Col, ctx: Ctx): string {
   if (c.kind === 'select') return optLabel(c.options ?? [], v);
   return Array.isArray(v) ? v.join(', ') : String(v).replace(/\s+/g, ' ').trim();
 }
+/** The value an editor starts from (for the derived columns, what the cell shows). */
+function editValue(p: SheetPerson, c: Col, ctx: Ctx): unknown {
+  switch (c.key) {
+    case '_who': return who(p) || null;
+    case '_from': return cameFrom(p) || null;
+    case '_said': return ctx.said[p.id]?.text || null;
+    case '_tags': return (p.flags ?? []).filter((f) => TAGS[f]);
+    case '_stage': { const t = primaryType(p); return t ? `${t}:${p[STAGE_OF[t].col] ?? ''}` : null; }
+  }
+  return p[c.key] ?? null;
+}
 function sortKey(p: SheetPerson, c: Col, ctx: Ctx): string | number {
   if (c.key === '_said') return ctx.said[p.id]?.at ? +new Date(ctx.said[p.id].at) : 0;
   if (['source_at', 'last_inbound_at', 'last_outbound_at'].includes(c.key)) return p[c.key] ? +new Date(String(p[c.key])) : '';
@@ -161,7 +178,6 @@ export function CrmPage(p: Props) {
   const [data, setData] = useState<SheetData>({ people: [], said: {}, loaded: false });
   const [loadError, setLoadError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
-  const [filter, setFilter] = useState<Filter>('all');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('any');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: 'source_at', dir: -1 });
@@ -206,34 +222,37 @@ export function CrmPage(p: Props) {
   const ctx: Ctx = useMemo(() => ({ said: data.said }), [data.said]);
   const today = todayISO();
   const visible = useMemo(() => data.people.filter((x) => !(x.flags ?? []).includes('test')), [data.people]);
-  const counts = useMemo(() => ({
-    all: visible.length,
-    due: visible.filter((x) => dueBy(x, today)).length,
-    ourTurn: visible.filter(ourTurn).length,
-    new: visible.filter((x) => arrivedWithin(x, 48)).length,
-    notContacted: visible.filter(notContacted).length,
-  }), [visible, today]);
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase().replace(/^@/, '');
     const col = COL[sort.key] ?? COLS[0];
-    const pass = (x: SheetPerson) =>
-      filter === 'all' ? true : filter === 'due' ? dueBy(x, today) : filter === 'ourTurn' ? ourTurn(x) : filter === 'new' ? arrivedWithin(x, 48) : notContacted(x);
     const hit = (x: SheetPerson) => !q || [x.name, x.email_normalized, x.company, x.job_title, x.x_handle, x.phone_as_typed, x.notes, x.next_action, x.enrichment_headline, data.said[x.id]?.text]
       .some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
-    return visible.filter((x) => pass(x) && typePass(x, typeFilter) && hit(x)).sort((a, b) => {
+    return visible.filter((x) => typePass(x, typeFilter) && hit(x)).sort((a, b) => {
       const ka = sortKey(a, col, ctx), kb = sortKey(b, col, ctx);
       if (ka === '' && kb !== '') return 1; // empty cells sink, whichever way the sort runs
       if (kb === '' && ka !== '') return -1;
       if (ka === kb) return +new Date(b.source_at) - +new Date(a.source_at);
       return (ka < kb ? -1 : 1) * sort.dir;
     });
-  }, [visible, filter, typeFilter, query, sort, data.said, today]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [visible, typeFilter, query, sort, data.said]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* ── writing ── */
-  const commit = (person: SheetPerson, patch: Record<string, unknown>) => {
-    const changed = Object.fromEntries(Object.entries(patch).filter(([k, v]) => JSON.stringify(person[k] ?? null) !== JSON.stringify(v ?? null)));
+  /* ── writing, and this session's undo / redo ── */
+  type Op = { t: 'person'; id: string; before: Record<string, unknown>; after: Record<string, unknown> } | { t: 'said'; id: string; before: string | null; after: string | null };
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  const undoStack = useRef<Op[][]>([]);
+  const redoStack = useRef<Op[][]>([]);
+  const remember = (ops: Op[]) => {
+    if (!ops.length) return;
+    undoStack.current.push(ops);
+    if (undoStack.current.length > 100) undoStack.current.shift();
+    redoStack.current = [];
+  };
+  const commit = (person: SheetPerson, patch: Record<string, unknown>, track = true) => {
+    const changed = Object.fromEntries(Object.entries(patch).filter(([k, v]) => !same(person[k], v)));
     if (!Object.keys(changed).length) return;
     const before = Object.fromEntries(Object.keys(changed).map((k) => [k, person[k] ?? null]));
+    if (track) remember([{ t: 'person', id: person.id, before, after: changed }]);
     setData((d) => ({ ...d, people: d.people.map((x) => (x.id === person.id ? { ...x, ...changed } : x)) }));
     writePatch(teamId, me, person, changed)
       .then((row) => setData((d) => ({ ...d, people: d.people.map((x) => (x.id === row.id ? row : x)) })))
@@ -242,8 +261,54 @@ export function CrmPage(p: Props) {
         p.onError(`Not saved: ${String((e as Error).message ?? e)}`);
       });
   };
+  /** "Their message": the text of the person's latest submission. */
+  const saveSaid = (person: SheetPerson, value: string | null, track = true) => {
+    const w = dataRef.current.said[person.id];
+    const before = w?.text || null;
+    if ((value || null) === before) return;
+    if (track) remember([{ t: 'said', id: person.id, before, after: value || null }]);
+    const put = (x: LastWords | null) => setData((d) => { const said = { ...d.said }; if (x && x.text) said[person.id] = x; else delete said[person.id]; return { ...d, said }; });
+    put({ at: w?.at ?? new Date().toISOString(), text: value ?? '', channel: w?.channel ?? '', id: w?.id });
+    writeSaid(teamId, me, person.id, w?.id ?? null, before, value || null)
+      .then((x) => put(x))
+      .catch((e) => { put(w ?? null); p.onError(`Not saved: ${String((e as Error).message ?? e)}`); });
+  };
+  /** Put a recorded change back (undo) or forward again (redo). A field someone changed since is left alone. */
+  const replay = (ops: Op[], dir: 'undo' | 'redo') => {
+    const stale: string[] = [];
+    for (const op of ops) {
+      const want = dir === 'undo' ? op.before : op.after;
+      const was = dir === 'undo' ? op.after : op.before;
+      const person = dataRef.current.people.find((x) => x.id === op.id);
+      if (!person) continue;
+      if (op.t === 'said') {
+        const cur = dataRef.current.said[op.id]?.text || null;
+        if (cur === (was as string | null)) saveSaid(person, want as string | null, false);
+        else if (cur !== want) stale.push('Their message');
+        continue;
+      }
+      const patch: Record<string, unknown> = {};
+      for (const k of Object.keys(want as Record<string, unknown>)) {
+        if (same(person[k], (was as Record<string, unknown>)[k])) patch[k] = (want as Record<string, unknown>)[k];
+        else if (!same(person[k], (want as Record<string, unknown>)[k])) stale.push(labelOf(k));
+      }
+      if (Object.keys(patch).length) commit(person, patch, false);
+    }
+    if (stale.length) p.onError(`Left as it is (changed since): ${[...new Set(stale)].join(', ')}`);
+  };
+  const undo = () => { const ops = undoStack.current.pop(); if (!ops) return; replay(ops, 'undo'); redoStack.current.push(ops); };
+  const redo = () => { const ops = redoStack.current.pop(); if (!ops) return; replay(ops, 'redo'); undoStack.current.push(ops); };
+  if (p.undoRef) p.undoRef.current = (kind) => (kind === 'undo' ? undo() : redo());
+  useEffect(() => () => { if (p.undoRef) p.undoRef.current = null; }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  /** What the chat agent changed, as one undo step (⌘Z takes back the whole turn). */
+  const chatOps = (t: ChatTurn): Op[] => (t.applied ?? []).filter((a) => a.changes?.length).map((a) => ({
+    t: 'person', id: a.person_id,
+    before: Object.fromEntries((a.changes ?? []).map((c) => [c.field, c.before])),
+    after: Object.fromEntries((a.changes ?? []).map((c) => [c.field, c.after])),
+  }));
+
   /** A column's new value as a patch: Stage writes the primary type's stage (and adds that type to an untyped
-   *  person); email keeps the address list in step. */
+   *  person); email keeps the address list in step; the derived columns write where their value lives. */
   const patchFor = (person: SheetPerson, key: string, value: unknown): Record<string, unknown> => {
     if (key === '_stage') {
       const [t, v] = String(value ?? '').split(':') as [TypeKey, string];
@@ -258,9 +323,24 @@ export function CrmPage(p: Props) {
       const e = String(value ?? '').trim().toLowerCase() || null;
       return { email_normalized: e, emails: e ? [e, ...(person.emails ?? []).filter((x) => x.toLowerCase() !== e)] : person.emails ?? [] };
     }
+    if (key === 'name') { // first and last name follow it (the email templates greet by first name)
+      const parts = String(value ?? '').trim().split(/\s+/).filter(Boolean);
+      return { name: value, first_name: parts[0] ?? null, last_name: parts.slice(1).join(' ') || null };
+    }
+    if (key === '_who') return { enrichment_headline: value };
+    if (key === '_from') {
+      const a = { ...((person.attribution ?? {}) as Record<string, unknown>) };
+      if (value) a.label = value; else delete a.label;
+      return { attribution: a };
+    }
+    if (key === '_tags') return { flags: [...(person.flags ?? []).filter((f) => !TAGS[f]), ...((value as string[] | null) ?? [])] };
     return { [key]: value };
   };
-  const save = (person: SheetPerson, key: string, value: unknown) => commit(person, patchFor(person, key, value));
+  const save = (person: SheetPerson, key: string, value: unknown) => {
+    if (key === '_said') { saveSaid(person, (value as string | null) ?? null); return; }
+    if (key !== '_stage' && same(value, editValue(person, COL[key] ?? { key, label: key, w: 0, kind: 'text' }, ctx))) return; // nothing changed
+    commit(person, patchFor(person, key, value));
+  };
 
   /* ── keyboard and selection ── */
   const focusGrid = () => gridRef.current?.focus({ preventScroll: true });
@@ -285,6 +365,7 @@ export function CrmPage(p: Props) {
   const onKey = (e: React.KeyboardEvent) => {
     if (edit || e.target !== gridRef.current) return; // the editor owns its keys
     const k = e.key;
+    if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'z') { e.preventDefault(); e.nativeEvent.stopPropagation(); if (e.shiftKey) redo(); else undo(); return; }
     if (k === 'ArrowDown') { e.preventDefault(); moveSel(1, 0); return; }
     if (k === 'ArrowUp') { e.preventDefault(); moveSel(-1, 0); return; }
     if (k === 'ArrowRight' || (k === 'Tab' && !e.shiftKey)) { e.preventDefault(); moveSel(0, 1); return; }
@@ -296,7 +377,7 @@ export function CrmPage(p: Props) {
     if (k === 'Enter' || k === 'F2') { e.preventDefault(); startEdit(sel.id, sel.key); return; }
     if (k === ' ') { e.preventDefault(); setRecordId(sel.id); return; }
     if (k === 'Escape') { if (recordId) setRecordId(null); else setSel(null); return; }
-    if ((k === 'Backspace' || k === 'Delete') && editable(col) && col.kind !== 'bool') { e.preventDefault(); save(person, sel.key, col.kind === 'types' ? [] : null); return; }
+    if ((k === 'Backspace' || k === 'Delete') && editable(col) && col.kind !== 'bool') { e.preventDefault(); save(person, sel.key, col.kind === 'types' || col.kind === 'tags' ? [] : null); return; }
     if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'c') { e.preventDefault(); navigator.clipboard?.writeText(text(person, col, ctx)).catch(() => {}); return; }
     if (k.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey && (inlineText(col) || col.kind === 'long')) { e.preventDefault(); startEdit(sel.id, sel.key, k); }
   };
@@ -343,22 +424,18 @@ export function CrmPage(p: Props) {
 
   return (
     <div className="crm cs">
-      <Overview data={data} visible={visible} counts={counts} today={today} filter={filter} cloud={cloud} onError={p.onError}
-        onFilter={(f) => { setFilter(f); setQuery(''); }} onPerson={(id) => { setFilter('all'); setTypeFilter('any'); setQuery(''); openRecord(id); }} />
+      <Overview data={data} visible={visible} today={today} cloud={cloud} teamId={teamId} ctx={ctx} onError={p.onError}
+        scope={record ? { id: record.id, name: nameOf(record) } : null}
+        onApplied={(t) => remember(chatOps(t))} onUndoTurn={(t) => replay(chatOps(t), 'undo')}
+        onPerson={(id) => { setTypeFilter('any'); setQuery(''); openRecord(id); }} />
       <section className="cs-main">
         <header className="cs-bar">
           <input className="cs-search" placeholder="Search name, email, company, notes…" value={query} onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); focusGrid(); } if (e.key === 'ArrowDown' || e.key === 'Enter') { e.preventDefault(); if (rows[0]) setSel({ id: rows[0].id, key: 'name' }); focusGrid(); } }} />
-          <select className="cs-type" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as TypeFilter)} aria-label="Type">
-            {TYPE_FILTERS.map((t) => <option key={t.k} value={t.k}>{t.t} ({t.k === 'any' ? visible.length : visible.filter((x) => typePass(x, t.k)).length})</option>)}
+          <select className={`cs-type${typeFilter !== 'any' ? ' on' : ''}`} value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as TypeFilter)} aria-label="Type filter">
+            {TYPE_FILTERS.map((t) => <option key={t.k} value={t.k}>{t.k === 'any' ? t.t : `${t.t} (${visible.filter((x) => typePass(x, t.k)).length})`}</option>)}
           </select>
-          <div className="cs-filters">
-            {FILTERS.map((f) => (
-              <button key={f.k} className={`cs-filter${filter === f.k ? ' on' : ''}`} onClick={() => setFilter(f.k)}>
-                {f.t}<span>{counts[f.k]}</span>
-              </button>
-            ))}
-          </div>
+          <span className="cs-count">{rows.length === visible.length ? `${visible.length} people` : `${rows.length} of ${visible.length}`}</span>
           <span className="panel-spacer" />
           <div className="cs-cols-wrap">
             <button className={`cs-filter${colsOpen ? ' on' : ''}`} onClick={() => setColsOpen((o) => !o)}>Columns<span>{cols.length}</span></button>
@@ -416,7 +493,7 @@ export function CrmPage(p: Props) {
       </section>
       {editing && editCol && !inlineText(editCol) && (
         <Popover anchor={cellEl(editing.id, editCol.key)}>
-          <FieldEditor col={editCol} person={editing} initial={edit?.initial} onDone={(v, move) => { if (v !== undefined) save(editing, editCol.key, v); done(move); }} />
+          <FieldEditor col={editCol} person={editing} value={editValue(editing, editCol, ctx)} initial={edit?.initial} onDone={(v, move) => { if (v !== undefined) save(editing, editCol.key, v); done(move); }} />
         </Popover>
       )}
       {peek && !edit && createPortal(
@@ -429,9 +506,9 @@ export function CrmPage(p: Props) {
 
 /* ─── the daily overview ────────────────────────────── */
 
-function Overview({ data, visible, counts, today, filter, cloud, onError, onFilter, onPerson }: {
-  data: SheetData; visible: SheetPerson[]; counts: Record<Filter, number>; today: string; filter: Filter; cloud: boolean;
-  onError: (m: string) => void; onFilter: (f: Filter) => void; onPerson: (id: string) => void;
+function Overview({ data, visible, today, cloud, teamId, ctx, scope, onError, onPerson, onApplied, onUndoTurn }: {
+  data: SheetData; visible: SheetPerson[]; today: string; cloud: boolean; teamId: string; ctx: Ctx; scope: { id: string; name: string } | null;
+  onError: (m: string) => void; onPerson: (id: string) => void; onApplied: (t: ChatTurn) => void; onUndoTurn: (t: ChatTurn) => void;
 }) {
   // Each person appears once, in the first section that fits: what is due, whose turn it is, who is new, who is waiting.
   const seen = new Set<string>();
@@ -442,46 +519,39 @@ function Overview({ data, visible, counts, today, filter, cloud, onError, onFilt
   const fresh = take(visible.filter((x) => arrivedWithin(x, 48)).sort(byRecent));
   const waiting = take(visible.filter(notContacted).sort(byRecent));
   const date = new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
-  const stats: { k: Filter; t: string }[] = [{ k: 'new', t: 'New 48h' }, { k: 'notContacted', t: 'Not contacted' }, { k: 'ourTurn', t: 'Our turn' }, { k: 'due', t: 'Due' }];
   const step = (x: SheetPerson) => [x.next_action_kind ? optLabel(STEPS, x.next_action_kind) : '', one(x.next_action, 90)].filter(Boolean).join(': ');
   return (
     <aside className="cs-overview">
       <div className="cs-ov-head"><h1>Today</h1><span>{date}</span></div>
-      <div className="cs-stats">
-        {stats.map((s) => (
-          <button key={s.k} className={`cs-stat${filter === s.k ? ' on' : ''}${s.k === 'due' && counts.due ? ' hot' : ''}`} onClick={() => onFilter(filter === s.k ? 'all' : s.k)}>
-            <strong>{data.loaded ? counts[s.k] : '–'}</strong><span>{s.t}</span>
-          </button>
-        ))}
-      </div>
       <div className="cs-ov-scroll">
         {!data.loaded && <div className="cs-empty">Loading…</div>}
-        <OvSection title="Due" list={due} limit={8} line={(x) => step(x) || 'Next step due'} meta={(x) => fmtDay(x.next_action_due)} metaHot={(x) => (x.next_action_due ?? '') < today} onPerson={onPerson} onMore={() => onFilter('due')} />
-        <OvSection title="Our turn" hint="They answered; the next word is ours" list={turn} limit={8} line={(x) => one(data.said[x.id]?.text, 90) || one(who(x), 90)} meta={(x) => ago(x.last_inbound_at)} onPerson={onPerson} onMore={() => onFilter('ourTurn')} />
-        <OvSection title="New" hint="Arrived in the last 48 hours" list={fresh} limit={10} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} onMore={() => onFilter('new')} />
-        <OvSection title="Not contacted yet" list={waiting} limit={8} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} onMore={() => onFilter('notContacted')} />
+        <OvSection title="Due" list={due} limit={6} line={(x) => step(x) || 'Next step due'} meta={(x) => fmtDay(x.next_action_due)} metaHot={(x) => (x.next_action_due ?? '') < today} onPerson={onPerson} />
+        <OvSection title="Our turn" hint="They answered; the next word is ours" list={turn} limit={6} line={(x) => one(data.said[x.id]?.text, 90) || one(who(x), 90)} meta={(x) => ago(x.last_inbound_at)} onPerson={onPerson} />
+        <OvSection title="New" hint="Arrived in the last 48 hours" list={fresh} limit={6} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} />
+        <OvSection title="Not contacted yet" list={waiting} limit={6} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} />
         {data.loaded && !due.length && !turn.length && !fresh.length && !waiting.length && <div className="cs-empty">Nobody is waiting on us.</div>}
       </div>
-      {cloud && <ChatBox personId={null} onError={onError} placeholder="Dump meeting notes or an update, or ask about anyone…" />}
+      {cloud && <ChatPanel teamId={teamId} people={data.people} ctx={ctx} scope={scope} onError={onError} onPerson={onPerson} onApplied={onApplied} onUndoTurn={onUndoTurn} />}
     </aside>
   );
 }
 
-function OvSection({ title, hint, list, limit, line, meta, metaHot, onPerson, onMore }: {
+function OvSection({ title, hint, list, limit, line, meta, metaHot, onPerson }: {
   title: string; hint?: string; list: SheetPerson[]; limit: number; line: (x: SheetPerson) => string; meta: (x: SheetPerson) => string;
-  metaHot?: (x: SheetPerson) => boolean; onPerson: (id: string) => void; onMore: () => void;
+  metaHot?: (x: SheetPerson) => boolean; onPerson: (id: string) => void;
 }) {
+  const [all, setAll] = useState(false);
   if (!list.length) return null;
   return (
     <section className="cs-ov-sec">
       <h2 title={hint}>{title} <span>{list.length}</span></h2>
-      {list.slice(0, limit).map((x) => (
+      {list.slice(0, all ? list.length : limit).map((x) => (
         <button key={x.id} className="cs-ov-row" onClick={() => onPerson(x.id)}>
           <span className="cs-ov-main"><b>{nameOf(x)}</b><em>{line(x) || x.email_normalized || ''}</em></span>
           <span className={`cs-ov-meta${metaHot?.(x) ? ' hot' : ''}`}>{meta(x)}</span>
         </button>
       ))}
-      {list.length > limit && <button className="cs-ov-more" onClick={onMore}>All {list.length} in the sheet →</button>}
+      {list.length > limit && <button className="cs-ov-more" onClick={() => setAll((v) => !v)}>{all ? 'Show fewer' : `Show all ${list.length}`}</button>}
     </section>
   );
 }
@@ -511,7 +581,7 @@ const Row = memo(function Row({ person, n, ctx, cols, said, today, selKey, editK
               (e.currentTarget.closest('.cs-grid-wrap') as HTMLElement | null)?.focus({ preventScroll: true });
             }}
             onDoubleClick={() => { if (c.kind !== 'bool') onEdit(c.key); }}>
-            {isEdit ? <InlineEditor col={c} value={person[c.key]} initial={initial} onDone={(v, move) => onInlineDone(c.key, v, move)} /> : <Cell person={person} col={c} ctx={ctx} today={today} onOpen={onOpen} onToggle={() => onEdit(c.key)} />}
+            {isEdit ? <InlineEditor col={c} value={editValue(person, c, ctx)} initial={initial} onDone={(v, move) => onInlineDone(c.key, v, move)} /> : <Cell person={person} col={c} ctx={ctx} today={today} onOpen={onOpen} onToggle={() => onEdit(c.key)} />}
           </td>
         );
       })}
@@ -586,15 +656,18 @@ function Popover({ anchor, children }: { anchor: HTMLElement | null; children: R
 
 /* The editor for everything that is not short text: long text (with the step kind for the next step), choices,
    types, dates, yes/no. Saves on Enter / ⌘Enter / click-away / choosing; Escape cancels. */
-function FieldEditor({ col, person, initial, onDone }: { col: Col; person: SheetPerson; initial?: string; onDone: (v: unknown | undefined, move?: 'down' | 'right' | 'left') => void }) {
+function FieldEditor({ col, person, value, initial, onDone }: { col: Col; person: SheetPerson; value?: unknown; initial?: string; onDone: (v: unknown | undefined, move?: 'down' | 'right' | 'left') => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const finished = useRef(false);
   const finish = (v: unknown | undefined, move?: 'down' | 'right' | 'left') => { if (finished.current) return; finished.current = true; onDone(v, move); };
-  const [draft, setDraft] = useState<string>(() => initial ?? (person[col.key] === null || person[col.key] === undefined ? '' : String(person[col.key])));
+  const start = value === undefined ? person[col.key] : value;
+  const [draft, setDraft] = useState<string>(() => initial ?? (start === null || start === undefined ? '' : String(start)));
   const [kind, setKind] = useState<string | null>((person.next_action_kind as string | null) ?? null);
   const [types, setTypes] = useState<string[]>(person.types ?? []);
+  const [tags, setTags] = useState<string[]>(Array.isArray(start) && col.kind === 'tags' ? (start as string[]) : []);
   const valueNow = (): unknown => {
     if (col.kind === 'types') return TYPES.map((o) => o[0]).filter((t) => types.includes(t));
+    if (col.kind === 'tags') return Object.keys(TAGS).filter((t) => tags.includes(t));
     const s = draft.trim();
     return s === '' ? null : col.kind === 'long' ? draft.replace(/\s+$/, '') : s;
   };
@@ -648,6 +721,17 @@ function FieldEditor({ col, person, initial, onDone }: { col: Col; person: Sheet
         <div className="cs-menu-h">Type (several allowed)</div>
         {TYPES.map(([v, l]) => (
           <label key={v} className="cs-menu-check"><input type="checkbox" checked={types.includes(v)} onChange={() => setTypes((t) => (t.includes(v) ? t.filter((x) => x !== v) : [...t, v]))} />{l}</label>
+        ))}
+        <div className="cs-menu-foot"><button className="pill small" onClick={() => commitNow('down')}>Save</button></div>
+      </div>
+    );
+  }
+  if (col.kind === 'tags') {
+    return (
+      <div className="cs-menu" ref={ref} tabIndex={-1} onKeyDown={keys}>
+        <div className="cs-menu-h">Tags</div>
+        {Object.entries(TAGS).map(([v, l]) => (
+          <label key={v} className="cs-menu-check"><input type="checkbox" checked={tags.includes(v)} onChange={() => setTags((t) => (t.includes(v) ? t.filter((x) => x !== v) : [...t, v]))} />{l}</label>
         ))}
         <div className="cs-menu-foot"><button className="pill small" onClick={() => commitNow('down')}>Save</button></div>
       </div>
@@ -724,9 +808,10 @@ function RecordPanel({ person, said, people, cloud, ctx, onClose, onSave, onUndo
     if (c.surface.startsWith('system:migration')) return 'Cleanup';
     return 'System';
   };
-  const labelOf = (k: string) => COL[k]?.label ?? k.replace(/_/g, ' ');
   const val = (k: string, v: unknown) => {
     if (v === null || v === undefined || v === '' || (Array.isArray(v) && !v.length)) return 'empty';
+    if (k === 'attribution') return cameFrom({ ...person, attribution: v } as SheetPerson) || 'empty';
+    if (k === 'flags') return (v as string[]).map((f) => TAGS[f]).filter(Boolean).join(', ') || 'empty';
     const c = COL[k];
     return c ? text({ ...person, [k]: v } as SheetPerson, c, ctx) || String(v) : (Array.isArray(v) ? v.join(', ') : String(v));
   };
@@ -748,7 +833,7 @@ function RecordPanel({ person, said, people, cloud, ctx, onClose, onSave, onUndo
         <button className="icon-btn" title="Close (Esc)" onClick={onClose}><XGlyph /></button>
       </header>
       <div className="cs-rec-scroll">
-        {cloud && <ChatBox personId={person.id} onError={onError} placeholder={`Tell the CRM about ${nameOf(person)}: a call, a meeting, a promise…`} compact />}
+        <p className="cs-note cs-rec-hint">Every field is editable: click it. To tell the CRM what happened, use the chat on the left; it is about {nameOf(person)} while this is open.</p>
         {SECTIONS.map((s) => (
           <section key={s.t} className="cs-rec-sec">
             <h3>{s.t}</h3>
@@ -759,6 +844,7 @@ function RecordPanel({ person, said, people, cloud, ctx, onClose, onSave, onUndo
                   if (!c) return null;
                   const t = text(person, c, ctx);
                   const canEdit = editable(c);
+                  void canEdit;
                   return (
                     <tr key={k} className={canEdit ? '' : 'ro'}>
                       <th>{c.label}</th>
@@ -799,7 +885,7 @@ function RecordPanel({ person, said, people, cloud, ctx, onClose, onSave, onUndo
             {history.map((c) => (
               <div key={c.id} className="cs-change">
                 <div className="cs-msg-head"><b>{by(c)}</b><span>{stamp(c.at)}</span></div>
-                {Object.keys(c.after ?? {}).filter((k) => COL[k] || ['types', 'customer_stage', 'investor_stage', 'contributor_stage', 'next_action_kind', 'emails'].includes(k)).filter((k) => k !== 'emails').map((k) => {
+                {Object.keys(c.after ?? {}).filter((k) => COL[k] || ['enrichment_headline', 'attribution', 'flags'].includes(k)).map((k) => {
                   const after = (c.after ?? {})[k];
                   const before = (c.before ?? {})[k] ?? null;
                   const current = JSON.stringify(person[k] ?? null) === JSON.stringify(after ?? null);
@@ -842,8 +928,8 @@ function RecordPanel({ person, said, people, cloud, ctx, onClose, onSave, onUndo
       {editing && editCol && (
         <Popover anchor={editing.el}>
           {inlineText(editCol)
-            ? <TextPopEditor col={editCol} value={person[editing.key]} onDone={(v) => { setEditing(null); if (v !== undefined) onSave(editing.key, v); }} />
-            : <FieldEditor col={editCol} person={person} onDone={(v) => { setEditing(null); if (v !== undefined) onSave(editing.key, v); }} />}
+            ? <TextPopEditor col={editCol} value={editValue(person, editCol, ctx)} onDone={(v) => { setEditing(null); if (v !== undefined) onSave(editing.key, v); }} />
+            : <FieldEditor col={editCol} person={person} value={editValue(person, editCol, ctx)} onDone={(v) => { setEditing(null); if (v !== undefined) onSave(editing.key, v); }} />}
         </Popover>
       )}
     </aside>
@@ -871,53 +957,124 @@ function TextPopEditor({ col, value, onDone }: { col: Col; value: unknown; onDon
   );
 }
 
-/* ─── the chat box: notes and updates in plain words, applied by the CRM agent on the server ── */
+/* ─── the chat with the CRM agent ───────────────────── */
+/* A conversation, not a one-shot box: the thread stays (per machine, per team), the agent shows what it is doing while
+   it works, every turn lists what it changed with an Undo, and when it asks something the next message is read as the
+   answer (the last turns travel with each message). While a record is open the chat is about that person. */
 
-function ChatBox({ personId, onError, placeholder, compact }: { personId: string | null; onError: (m: string) => void; placeholder: string; compact?: boolean }) {
-  const [turns, setTurns] = useState<ChatTurn[]>([]);
+const CHAT_KEY = (teamId: string) => `exponential-crm-chat-v1:${teamId}`;
+const loadChat = (teamId: string): ChatTurn[] => { try { const v = JSON.parse(localStorage.getItem(CHAT_KEY(teamId)) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
+const saveChat = (teamId: string, turns: ChatTurn[]) => { try { localStorage.setItem(CHAT_KEY(teamId), JSON.stringify(turns.slice(-80))); } catch { /* no storage */ } };
+
+function ChatPanel({ teamId, people, ctx, scope, onError, onPerson, onApplied, onUndoTurn }: {
+  teamId: string; people: SheetPerson[]; ctx: Ctx; scope: { id: string; name: string } | null;
+  onError: (m: string) => void; onPerson: (id: string) => void; onApplied: (t: ChatTurn) => void; onUndoTurn: (t: ChatTurn) => void;
+}) {
+  const [turns, setTurns] = useState<ChatTurn[]>(() => loadChat(teamId));
   const [draft, setDraft] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<{ steps: string[]; since: number } | null>(null);
+  const [unscoped, setUnscoped] = useState<string | null>(null);
+  const [, tick] = useState(0);
   const logRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [turns, busy]);
+  const inRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { setTurns(loadChat(teamId)); }, [teamId]);
+  useEffect(() => { saveChat(teamId, turns); }, [teamId, turns]);
+  useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [turns, busy?.steps.length]);
+  useEffect(() => { if (!busy) return; const t = window.setInterval(() => tick((n) => n + 1), 1000); return () => window.clearInterval(t); }, [busy]);
+  const about = scope && scope.id !== unscoped ? scope : null;
   const send = async () => {
     const message = draft.trim();
     if (!message || busy) return;
-    const mine: ChatTurn = { role: 'member', text: message };
-    setTurns((t) => [...t, mine]);
+    const mine: ChatTurn = { role: 'member', text: message, at: new Date().toISOString(), about };
+    const history = [...turns, mine];
+    setTurns(history);
     setDraft('');
-    setBusy(true);
+    setBusy({ steps: [], since: Date.now() });
     try {
-      const reply = await askCrm(message, personId, [...turns, mine]);
+      const reply = await askCrm(message, about?.id ?? null, turns, (step) => setBusy((b) => (b ? { ...b, steps: [...b.steps, step] } : b)));
       setTurns((t) => [...t, reply]);
+      onApplied(reply);
     } catch (e) {
       const m = String((e as Error).message ?? e);
-      setTurns((t) => [...t, { role: 'agent', text: `Not applied: ${m}`, error: true }]);
+      setTurns((t) => [...t, { role: 'agent', text: `That did not go through: ${m}`, error: true, at: new Date().toISOString() }]);
       onError(`CRM chat: ${m}`);
     } finally {
-      setBusy(false);
+      setBusy(null);
+      inRef.current?.focus();
     }
   };
-  const labelOf = (k: string) => COL[k]?.label ?? ({ customer_stage: 'Customer stage', investor_stage: 'Investor stage', contributor_stage: 'Contributor stage', next_action_kind: 'Step kind' } as Record<string, string>)[k] ?? k.replace(/_/g, ' ');
+  const undoTurn = (i: number) => {
+    const t = turns[i];
+    if (!t || t.undone) return;
+    onUndoTurn(t);
+    setTurns((all) => all.map((x, j) => (j === i ? { ...x, undone: true } : x)));
+  };
+  const show = (personId: string, k: string, v: unknown) => {
+    if (v === null || v === undefined || v === '' || (Array.isArray(v) && !v.length)) return 'empty';
+    const person = people.find((x) => x.id === personId);
+    const c = COL[k];
+    if (person && c) return text({ ...person, [k]: v } as SheetPerson, c, ctx) || String(v);
+    return Array.isArray(v) ? v.join(', ') : String(v);
+  };
+  const secs = (t: ChatTurn, i: number) => {
+    const prev = turns[i - 1];
+    return prev?.at && t.at ? Math.max(1, Math.round((+new Date(t.at) - +new Date(prev.at)) / 1000)) : null;
+  };
   return (
-    <div className={`cs-chat${compact ? ' compact' : ''}`}>
-      {(turns.length > 0 || busy) && (
-        <div className="cs-chat-log" ref={logRef}>
-          {turns.map((t, i) => (
-            <div key={i} className={`cs-turn ${t.role}${t.error ? ' error' : ''}`}>
-              <p>{t.text}</p>
-              {!!t.applied?.length && (
-                <ul>{t.applied.map((a) => <li key={a.person_id}><b>{a.name ?? 'Someone'}</b>{a.created ? ' (new)' : ''}{a.changed.length ? `: ${a.changed.map(labelOf).join(', ')}` : ': noted in the timeline'}</li>)}</ul>
-              )}
-              {!!t.questions?.length && <ul className="q">{t.questions.map((q, j) => <li key={j}>{q}</li>)}</ul>}
-            </div>
-          ))}
-          {busy && <div className="cs-turn agent busy"><p>Working on it…</p></div>}
-        </div>
+    <div className="cs-chat">
+      <div className="cs-chat-head">
+        <b>CRM agent</b>
+        <span>{busy ? 'working…' : ''}</span>
+        {turns.length > 0 && !busy && <button className="cs-link-btn" title="Start a new conversation (changes already made stay)" onClick={() => setTurns([])}>New chat</button>}
+      </div>
+      <div className="cs-chat-log" ref={logRef}>
+        {!turns.length && !busy && (
+          <div className="cs-chat-empty">
+            <p>Tell it what happened or ask it anything, in any language.</p>
+            <p className="ex">“Called Avery, coming Friday at 2”<br />“Met two investors at the dinner: …”<br />“Who should I call today?”</p>
+            <p>It shows what it changed, with Undo, and asks when something is unclear.</p>
+          </div>
+        )}
+        {turns.map((t, i) => (
+          <div key={i} className={`cs-turn ${t.role}${t.error ? ' error' : ''}`}>
+            {t.role === 'member' && t.about && <span className="cs-turn-about">about {t.about.name}</span>}
+            {t.text && <p>{t.text}</p>}
+            {!!t.applied?.length && (
+              <div className={`cs-applied${t.undone ? ' undone' : ''}`}>
+                {t.applied.map((a) => (
+                  <div key={a.person_id} className="cs-applied-p">
+                    <button className="cs-applied-name" onClick={() => onPerson(a.person_id)}>{a.name ?? 'Someone'}{a.created ? ' (added)' : ''}</button>
+                    {(a.changes ?? []).length ? (a.changes ?? []).map((c) => (
+                      <div key={c.field} className="cs-applied-row"><span>{labelOf(c.field)}</span><span><s>{one(show(a.person_id, c.field, c.before), 60)}</s> → {one(show(a.person_id, c.field, c.after), 80)}</span></div>
+                    )) : <div className="cs-applied-row"><span>Noted in the timeline</span></div>}
+                  </div>
+                ))}
+                {t.applied.some((a) => a.changes?.length) && (
+                  <button className="cs-undo" disabled={t.undone} onClick={() => undoTurn(i)}>{t.undone ? 'Undone' : 'Undo'}</button>
+                )}
+              </div>
+            )}
+            {!!t.questions?.length && (
+              <div className="cs-asks">{t.questions.map((q, j) => <p key={j}>{q}</p>)}<em>Answer below</em></div>
+            )}
+            {t.role === 'agent' && !!t.steps?.length && <span className="cs-turn-steps" title={t.steps.join(' → ')}>{t.steps.length} steps{secs(t, i) ? ` · ${secs(t, i)}s` : ''}</span>}
+          </div>
+        ))}
+        {busy && (
+          <div className="cs-turn agent busy">
+            {(busy.steps.length ? busy.steps : ['Sending']).map((st, j, arr) => <p key={j} className={j === arr.length - 1 ? 'now' : 'done'}>{st}</p>)}
+            <span className="cs-turn-steps">{Math.round((Date.now() - busy.since) / 1000)}s</span>
+          </div>
+        )}
+      </div>
+      {about && (
+        <div className="cs-chat-scope">About <b>{about.name}</b><button title="Ask about the whole CRM instead" onClick={() => setUnscoped(about.id)}>×</button></div>
       )}
       <div className="cs-chat-in">
-        <textarea value={draft} rows={compact ? 2 : 3} placeholder={placeholder} onChange={(e) => setDraft(e.target.value)}
+        <textarea ref={inRef} value={draft} rows={3} placeholder={about ? `What happened with ${about.name}?` : 'Dump meeting notes or an update, or ask about anyone…'}
+          onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
-        <button className="pill small" disabled={busy || !draft.trim()} onClick={send}>Send</button>
+        <button className="pill small" disabled={!!busy || !draft.trim()} onClick={send}>Send</button>
       </div>
     </div>
   );
