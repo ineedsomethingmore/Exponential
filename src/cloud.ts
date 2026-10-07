@@ -1,5 +1,5 @@
 import { createClient, type RealtimeChannel } from '@supabase/supabase-js';
-import type { Data, Deadline, Group, Notification, Person, Project, Retro, Task } from './types';
+import type { Data, Deadline, Group, Notification, Person, Project, Retro, Task, TeamFeatures } from './types';
 import { PROJECT_COLORS } from './types';
 
 export const SUPABASE_URL = 'https://mojqfsnnawdxndqaciuv.supabase.co';
@@ -115,7 +115,7 @@ export async function signOutCloud() {
 /* ─── Row shapes ───────────────────────────────────────────────────────── */
 
 type ProfileRow = { id: string; email: string; name: string; photo: string | null; color: string };
-type TeamRow = { id: string; name: string; icon: string | null; retro_fields: Data['retroFields'] | null; retro_template: Data['retroTemplate'] | null };
+type TeamRow = { id: string; name: string; icon: string | null; retro_fields: Data['retroFields'] | null; retro_template: Data['retroTemplate'] | null; features?: TeamFeatures | null };
 type MemberRow = { team_id: string; email: string; user_id: string | null; role: 'moderator' | 'member'; color: string; profiles: ProfileRow | null };
 type ProjectRow = { id: string; team_id: string; name: string; start_date: string; end_date: string; lane: number; color: string | null; notes: string | null; assignees: string[]; group_id: string | null; deleted_at: string | null };
 type GroupRow = { id: string; team_id: string; name: string; color: string; sort: number };
@@ -184,6 +184,7 @@ export async function loadTeam(teamId: string, me: string): Promise<Data> {
     icon: und(t.icon),
     retroFields: t.retro_fields ?? undefined,
     retroTemplate: t.retro_template ?? undefined,
+    features: t.features ?? undefined,
     moderators: rows.filter((m) => m.role === 'moderator').map((m) => m.user_id ?? pendingId(m.email)),
     me,
     people,
@@ -323,6 +324,7 @@ export async function persistDiff(prev: Data, next: Data) {
   if (prev.icon !== next.icon) tpatch.icon = next.icon ?? null;
   if (JSON.stringify(prev.retroFields) !== JSON.stringify(next.retroFields)) tpatch.retro_fields = next.retroFields ?? null;
   if (JSON.stringify(prev.retroTemplate) !== JSON.stringify(next.retroTemplate)) tpatch.retro_template = next.retroTemplate ?? null;
+  if (JSON.stringify(prev.features) !== JSON.stringify(next.features)) tpatch.features = next.features ?? null; // patch-012 column; errors surface as the red save toast until it's applied
   if (Object.keys(tpatch).length) ops.push(run('team', supabase.from('teams').update(tpatch).eq('id', teamId)));
 
   // Roster: people added/removed by email; role changes via the moderators list.

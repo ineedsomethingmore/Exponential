@@ -283,6 +283,8 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 -- 009: The retro template (objective, key results, health checks) lives on the team.
 alter table public.teams add column if not exists retro_template jsonb;
+-- 012: Per-team feature switches (Team settings → Features); absent = chat+meetings on, crm auto.
+alter table public.teams add column if not exists features jsonb;
 -- 008: Soft deletion — deleted projects/tasks keep their row for 7 days ("Recently deleted").
 alter table public.projects add column if not exists deleted_at timestamptz;
 alter table public.tasks add column if not exists deleted_at timestamptz;

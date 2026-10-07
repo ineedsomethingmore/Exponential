@@ -726,6 +726,10 @@ img { display: block; -webkit-user-drag: none; }
 }
 .team-page::-webkit-scrollbar { width: 0; }
 .team-card { flex: none; min-height: 0; padding: 22px 26px; display: block; }
+.feature-row { display: flex; align-items: center; gap: 16px; padding: 10px 0; }
+.feature-row + .feature-row { box-shadow: 0 -0.5px 0 var(--line); }
+.feature-info { flex: 1; min-width: 0; }
+.feature-name { font-weight: 600; font-size: 13.5px; }
 .team-card-head { display: flex; align-items: center; gap: 18px; -webkit-app-region: drag; }
 .team-card-head button, .team-card-head input { -webkit-app-region: no-drag; }
 .team-card-name { flex: 1; min-width: 0; }

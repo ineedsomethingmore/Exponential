@@ -592,7 +592,7 @@ export default function App() {
       const ch = chat.find((c) => c.id === e.message.channelId);
       const body = mentionsToNames(e.message.body, data.people) || (e.message.attachments?.length ? (e.message.attachments[0].type.startsWith('image/') ? '📷 Image' : e.message.attachments[0].name) : '');
       const title = ch && ch.name.startsWith('dm:') ? who : `#${ch?.name ?? 'chat'} · ${who}`;
-      window.exponential?.notify?.({ id: e.message.id, title, body, ref: { kind: 'chat', id: e.message.channelId } });
+      if (data.features?.chat !== false) window.exponential?.notify?.({ id: e.message.id, title, body, ref: { kind: 'chat', id: e.message.channelId } });
     }
   }), [chatTeam, data, chat, refreshChat]);
 
@@ -629,11 +629,19 @@ export default function App() {
       meetSeen.current.add(m.id);
       setMeetDot(true);
       const who = shortName(data.people.find((x) => x.id === m.owner)?.name ?? 'Someone');
-      window.exponential?.notify?.({ id: `meet-${m.id}`, title: 'New meeting', body: `${who} shared “${m.title}”`, ref: { kind: 'meeting', id: m.id } });
+      if (data.features?.meetings !== false) window.exponential?.notify?.({ id: `meet-${m.id}`, title: 'New meeting', body: `${who} shared “${m.title}”`, ref: { kind: 'meeting', id: m.id } });
     }, 'meetings-inbox');
   }, [cloudMode, meetTeam, data?.me]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (leftPanel === 'meetings') setMeetDot(false); }, [leftPanel]);
   useEffect(() => { leftOpenRef.current = leftPanel !== null; }, [leftPanel]);
+  // A feature switched off (here or by a teammate, over realtime) closes its panel.
+  const featChat = data?.features?.chat !== false;
+  const featMeet = data?.features?.meetings !== false;
+  const featCrm = data?.features?.crm; // undefined = automatic
+  useEffect(() => {
+    setLeftPanel((cur) =>
+      (cur === 'chat' && !featChat) || (cur === 'meetings' && !featMeet) || (cur === 'crm' && featCrm === false) ? null : cur);
+  }, [featChat, featMeet, featCrm]);
 
   // The menu-bar widget can ask the main window to open a specific item.
   useEffect(() => window.exponential?.onOpen((t) => {
@@ -976,7 +984,10 @@ export default function App() {
   const detailOpen = !!(selProject || selTask || selDeadline) || selection?.kind === 'retro';
   detailRef.current = detailOpen;
   const crmOpen = leftPanel === 'crm';
-  const showCrm = crmTeam === data.id || crmOpen; // only a team that has a CRM record shows the item
+  // Team settings → Features: an explicit switch wins; absent = chat/meetings on, crm automatic.
+  const chatOn = data.features?.chat !== false;
+  const meetingsOn = data.features?.meetings !== false;
+  const showCrm = (data.features?.crm ?? (crmTeam === data.id)) || crmOpen;
   const leftOpen = leftPanel !== null && !crmOpen;
   const unread = (data.notifications ?? []).filter((n) => n.to === data.me && !n.read).length;
   const chatUnread = chat.reduce((n, c) => n + c.unread, 0);
@@ -1220,14 +1231,18 @@ export default function App() {
           </button>
         </div>
         <button className={`nav-item${view === 'plan' && !crmOpen ? ' active' : ''}`} onClick={() => { setView('plan'); if (crmOpen) setLeftPanel(null); }}><PlanIcon /> <span className="nav-text">Plan</span></button>
-        <button className={`nav-item${leftPanel === 'chat' ? ' active' : ''}`} onClick={() => setLeftPanel(leftPanel === 'chat' ? null : 'chat')}>
-          <span className="nav-ico"><ChatIcon />{(chatUnread > 0 || unread > 0) && <span className="nav-dot" />}</span>
-          <span className="nav-text">Messages</span>
-        </button>
-        <button className={`nav-item${leftPanel === 'meetings' ? ' active' : ''}`} onClick={() => setLeftPanel(leftPanel === 'meetings' ? null : 'meetings')}>
-          <span className="nav-ico"><MeetIcon />{meetDot && <span className="nav-dot" />}</span>
-          <span className="nav-text">Meetings</span>
-        </button>
+        {chatOn && (
+          <button className={`nav-item${leftPanel === 'chat' ? ' active' : ''}`} onClick={() => setLeftPanel(leftPanel === 'chat' ? null : 'chat')}>
+            <span className="nav-ico"><ChatIcon />{(chatUnread > 0 || unread > 0) && <span className="nav-dot" />}</span>
+            <span className="nav-text">Messages</span>
+          </button>
+        )}
+        {meetingsOn && (
+          <button className={`nav-item${leftPanel === 'meetings' ? ' active' : ''}`} onClick={() => setLeftPanel(leftPanel === 'meetings' ? null : 'meetings')}>
+            <span className="nav-ico"><MeetIcon />{meetDot && <span className="nav-dot" />}</span>
+            <span className="nav-text">Meetings</span>
+          </button>
+        )}
         {showCrm && (
           <button className={`nav-item${leftPanel === 'crm' ? ' active' : ''}`} onClick={() => setLeftPanel(leftPanel === 'crm' ? null : 'crm')} title="The customer record: today's overview and the live sheet">
             <span className="nav-ico"><CrmIcon /></span>
@@ -1340,6 +1355,7 @@ export default function App() {
             team={data}
             cloud={cloudMode}
             canDelete={cloudMode || teams.length > 1}
+            crmAuto={crmTeam === data.id}
             onUpdate={(fn, coalesce) => update(fn, coalesce)}
             onDelete={() => { setView('plan'); setSelection(null); setSelectedPerson(null); deleteTeam(data.id); }}
           />
@@ -1390,14 +1406,18 @@ export default function App() {
               <PlanIcon />
               Plan
             </button>
-            <button className={leftPanel === 'chat' ? 'on' : ''} onClick={() => setLeftPanel(leftPanel === 'chat' ? null : 'chat')}>
-              <span className="nav-ico"><ChatIcon />{(chatUnread > 0 || unread > 0) && <span className="nav-dot" />}</span>
-              Messages
-            </button>
-            <button className={leftPanel === 'meetings' ? 'on' : ''} onClick={() => setLeftPanel(leftPanel === 'meetings' ? null : 'meetings')}>
-              <span className="nav-ico"><MeetIcon />{meetDot && <span className="nav-dot" />}</span>
-              Meetings
-            </button>
+            {chatOn && (
+              <button className={leftPanel === 'chat' ? 'on' : ''} onClick={() => setLeftPanel(leftPanel === 'chat' ? null : 'chat')}>
+                <span className="nav-ico"><ChatIcon />{(chatUnread > 0 || unread > 0) && <span className="nav-dot" />}</span>
+                Messages
+              </button>
+            )}
+            {meetingsOn && (
+              <button className={leftPanel === 'meetings' ? 'on' : ''} onClick={() => setLeftPanel(leftPanel === 'meetings' ? null : 'meetings')}>
+                <span className="nav-ico"><MeetIcon />{meetDot && <span className="nav-dot" />}</span>
+                Meetings
+              </button>
+            )}
             {showCrm && (
               <button className={leftPanel === 'crm' ? 'on' : ''} onClick={() => setLeftPanel(leftPanel === 'crm' ? null : 'crm')}>
                 <span className="nav-ico"><CrmIcon /></span>

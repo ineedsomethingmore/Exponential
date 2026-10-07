@@ -11,6 +11,7 @@ interface Props {
   team: Data;
   cloud: boolean; // members are invited by Google email and join when they sign in
   canDelete: boolean;
+  crmAuto: boolean; // the CRM's automatic state for this team (it has crm_people rows) — the default before anyone touches the switch
   onUpdate: (fn: (d: Data) => Data, coalesce?: string) => void;
   onDelete: () => void;
 }
@@ -162,9 +163,19 @@ function TemplateList<T extends { key: string }>({ items, text, setText, make, o
 }
 
 /** Members of the current team. Moderators can add, remove, and promote/demote. */
-export function TeamPage({ team, cloud, canDelete, onUpdate, onDelete }: Props) {
+export function TeamPage({ team, cloud, canDelete, crmAuto, onUpdate, onDelete }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const isMod = team.moderators.includes(team.me);
+
+  // Feature switches: what this team uses. Stored on the team (patch-012), so one
+  // moderator's flip hides/shows the sidebar item for everyone, live over realtime.
+  const features = [
+    { key: 'chat' as const, name: 'Messages', hint: 'Channels, DMs and the notifications inbox.', on: team.features?.chat !== false },
+    { key: 'meetings' as const, name: 'Meetings', hint: 'Recording, transcription and shared meetings.', on: team.features?.meetings !== false },
+    { key: 'crm' as const, name: 'CRM', hint: 'The customer sheet and agent (needs the CRM tables).', on: team.features?.crm ?? crmAuto },
+  ];
+  const flipFeature = (key: 'chat' | 'meetings' | 'crm', on: boolean) =>
+    onUpdate((d) => ({ ...d, features: { ...d.features, [key]: on } }));
 
   // Soft-deleted projects and tasks, newest first; anyone may bring one back.
   const trash = [
@@ -311,6 +322,25 @@ export function TeamPage({ team, cloud, canDelete, onUpdate, onDelete }: Props) 
         })}
         {!isMod && <p className="hint" style={{ padding: '10px 12px 2px' }}>Ask a moderator to add or remove people.</p>}
       </div>
+
+      {/* ── Features: which optional surfaces this team uses ── */}
+      {isMod && (
+        <div className="panel team-card">
+          <div className="settings-title">Features</div>
+          <p className="hint" style={{ margin: '0 0 6px' }}>What this team uses. Switching one off hides it from the sidebar for everyone.</p>
+          {features.map((f) => (
+            <div key={f.key} className="feature-row">
+              <div className="feature-info">
+                <div className="feature-name">{f.name}</div>
+                <div className="hint">{f.hint}</div>
+              </div>
+              <button className={`pill toggle${f.on ? ' active' : ''}`} onClick={() => flipFeature(f.key, !f.on)}>
+                {f.on ? 'On' : 'Off'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ── Retro template: objective + key results + health checks ── */}
       {isMod && (

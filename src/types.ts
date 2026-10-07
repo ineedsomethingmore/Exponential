@@ -117,12 +117,17 @@ export interface Retro {
   notes?: string;
 }
 
+/** Which optional surfaces this team uses (Team settings → Features). Absent key = the
+    default: chat and meetings ON, crm AUTO (shown once the team has CRM rows). */
+export interface TeamFeatures { chat?: boolean; meetings?: boolean; crm?: boolean }
+
 export interface Data {
   id: string;
   name: string;
   icon?: string; // image data URL; falls back to the first letter of the name
   retroFields?: RetroField[]; // legacy question list (pre-redesign retros)
   retroTemplate?: RetroTemplate;
+  features?: TeamFeatures;
   moderators: string[]; // person ids allowed to manage members
   people: Person[];
   groups?: Group[];
