@@ -175,7 +175,9 @@ function sortKey(p: SheetPerson, c: Col, ctx: Ctx): string | number {
 
 export function CrmPage(p: Props) {
   const { teamId, me, people, cloud } = p;
-  const [data, setData] = useState<SheetData>({ people: [], said: {}, loaded: false });
+  // seeded from the prewarmed cache so the FIRST painted frame already has rows — the
+  // mount effect alone still flashed one empty frame before its setData landed
+  const [data, setData] = useState<SheetData>(() => cachedSheet(p.teamId) ?? { people: [], said: {}, loaded: false });
   const [loadError, setLoadError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('any');
