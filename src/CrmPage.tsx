@@ -5,7 +5,7 @@ import { shortName } from './types';
 import { toISO, todayISO } from './dates';
 import { appIdle } from './idle';
 import {
-  arrivedWithin, askCrm, cameFrom, dueBy, fetchHistory, fetchRecord, fetchSheet, notContacted, ourTurn, subscribeSheet, writePatch, writeSaid,
+  arrivedWithin, askCrm, cachedSheet, cameFrom, dueBy, fetchHistory, fetchRecord, fetchSheet, notContacted, ourTurn, subscribeSheet, writePatch, writeSaid,
   type Change, type ChatTurn, type LastWords, type RecordDetail, type SheetData, type SheetPerson,
 } from './crmSheet';
 
@@ -196,7 +196,8 @@ export function CrmPage(p: Props) {
 
   const load = () => fetchSheet(teamId, cloud).then((d) => { setData(d); setLoadError(null); }).catch((e) => { const m = String((e as Error).message ?? e); setLoadError(m); p.onError(`CRM: ${m}`); });
   useEffect(() => {
-    setData({ people: [], said: {}, loaded: false }); setSel(null); setEdit(null); setRecordId(null);
+    // instant from the prewarmed cache; the fetch below reconciles in the background
+    setData(cachedSheet(teamId) ?? { people: [], said: {}, loaded: false }); setSel(null); setEdit(null); setRecordId(null);
     load();
     const unsub = subscribeSheet(teamId, cloud, {
       person: (row, oldId) => setData((d) => {

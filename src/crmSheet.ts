@@ -56,10 +56,17 @@ async function lastWords(teamId: string): Promise<Record<string, LastWords>> {
   }
 }
 
+/** Last fetched sheet per team: the page renders this instantly on open (App prewarms it
+    at boot), then its own fetch reconciles. */
+const sheetCache = new Map<string, SheetData>();
+export const cachedSheet = (teamId: string) => sheetCache.get(teamId);
+
 export async function fetchSheet(teamId: string, cloud: boolean): Promise<SheetData> {
   if (!cloud) return { people: [], said: {}, loaded: true };
   const [people, said] = await Promise.all([allPeople(teamId), lastWords(teamId)]);
-  return { people, said, loaded: true };
+  const out = { people, said, loaded: true };
+  sheetCache.set(teamId, out);
+  return out;
 }
 
 /** Whether this team keeps a CRM at all (any crm_people row): the app shows the CRM item only then. */

@@ -15,11 +15,11 @@ import { isPending, loadTeam, onPersistError, persistDiff, signOutCloud, subscri
 import { enablePush, pushEnabled, pushSupport } from './push';
 import { addDays, todayISO, weekStart } from './dates';
 import { ChatPage } from './ChatPage';
-import { fetchChat, mentionsToNames, onChatEvent, purgeExpiredChatFiles, subscribeChat, type Channel } from './chat';
+import { fetchChat, fetchMessages, fetchPreviews, mentionsToNames, messageCache, onChatEvent, purgeExpiredChatFiles, subscribeChat, type Channel } from './chat';
 import { MeetingsPage } from './MeetingsPage';
 import { CrmPage } from './CrmPage';
-import { hasCrm } from './crmSheet';
-import { subscribeMeetings } from './meetings';
+import { cachedSheet, fetchSheet, hasCrm } from './crmSheet';
+import { fetchMeetings, subscribeMeetings } from './meetings';
 
 /** Layout proportions, remembered per machine (not part of the shared plan data). */
 const PREFS_KEY = 'exponential-layout';
@@ -561,11 +561,19 @@ export default function App() {
   const chatTeam = data?.id;
   const chatViewRef = useRef({ panel: null as string | null, chatActive });
   chatViewRef.current = { panel: leftPanel, chatActive };
+  const warmedThreads = useRef<string | null>(null);
   const refreshChat = useCallback(() => {
     const d = { id: chatTeam, me: data?.me };
     if (!d.id || !d.me) return;
     fetchChat(d.id, d.me, cloudMode).then((chs) => {
       setChat(chs);
+      // prewarm the most recent threads once per team, HERE where chs provably belongs to
+      // d.id — an effect keyed on the chat state raced team switches and warmed the old list
+      if (cloudMode && warmedThreads.current !== d.id && dataRef2.current?.features?.chat !== false) {
+        warmedThreads.current = d.id ?? null;
+        [...chs].sort((a, b) => (b.lastAt ?? '').localeCompare(a.lastAt ?? '')).slice(0, 4)
+          .forEach((c) => { if (!messageCache.has(c.id)) fetchMessages(d.id!, c.id, true).catch(() => {}); });
+      }
       const want = pendingChatRef.current; // a push deep-link outlives the team-load reset below
       if (want && Date.now() - want.at < 2 * 60_000 && chs.some((c) => c.id === want.id)) {
         setLeftPanel('chat'); setChatActive(want.id); setChatJump(true);
@@ -576,6 +584,21 @@ export default function App() {
   }, [chatTeam, data?.me, cloudMode]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setChat([]); setChatActive(null); refreshChat(); }, [chatTeam, cloudMode]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!chatTeam || !cloudMode) return; return subscribeChat(chatTeam, cloudMode); }, [chatTeam, cloudMode]);
+
+  /* ── prewarm: the left panels open INSTANTLY. Previews, the most recent threads, the
+     meetings list and the CRM sheet are fetched into their module caches at boot and on
+     every team switch; the pages render cache-first and realtime keeps chat/meetings warm
+     from there. Each page still reconciles with its own fetch after opening. ── */
+  useEffect(() => {
+    if (!cloudMode || !chatTeam || !data) return;
+    if (data.features?.meetings !== false) fetchMeetings(chatTeam, true).catch(() => {});
+    if (data.features?.chat !== false) fetchPreviews(chatTeam, true).catch(() => {});
+  }, [cloudMode, chatTeam]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!cloudMode || !data?.id) return;
+    const on = data.features?.crm ?? (crmTeam === data.id);
+    if (on && !cachedSheet(data.id)) fetchSheet(data.id, true).catch(() => {});
+  }, [cloudMode, data?.id, crmTeam, data?.features?.crm]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { // 30-day chat-file lifetime: sweep my expired uploads (moderators: everyone's), once per team per session
     if (!chatTeam || !cloudMode || !data) return;
     purgeExpiredChatFiles(chatTeam, data.me, data.moderators.includes(data.me), true).catch(() => {});
