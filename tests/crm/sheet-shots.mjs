@@ -69,8 +69,19 @@ await sleep(400);
 const rows = await evaluate(`document.querySelectorAll('.cs-grid tbody tr').length`);
 const expected = await evaluate(`window.__db.crm_people.filter((p) => !(p.flags || []).includes('test')).length`);
 check('sheet shows every person except test rows', rows === expected, `${rows} rows, ${expected} expected`);
-check('no status filter pills, one type filter labelled as a filter',
-  (await evaluate(`document.querySelectorAll('.cs-filters, .cs-stat').length`)) === 0 && (await evaluate(`document.querySelector('select.cs-type option:checked').textContent`)) === 'Type filter');
+check('no status pills above the sheet, one type filter labelled as a filter',
+  (await evaluate(`document.querySelectorAll('.cs-filters').length`)) === 0 && (await evaluate(`document.querySelector('select.cs-type option:checked').textContent`)) === 'Type filter');
+// the four counters on the left stay, and filter the sheet (iain, 7 Oct)
+check('the left panel keeps its four counters', (await evaluate(`[...document.querySelectorAll('.cs-overview .cs-stat span')].map((x) => x.textContent).join('|')`)) === 'New 48h|Not contacted|Our turn|Due');
+const dueN = Number(await evaluate(`[...document.querySelectorAll('.cs-stat')].find((b) => b.textContent.endsWith('Due')).querySelector('strong').textContent`));
+await evaluate(`[...document.querySelectorAll('.cs-stat')].find((b) => b.textContent.endsWith('Due')).click()`);
+await sleep(250);
+const dueRows = await evaluate(`document.querySelectorAll('.cs-grid tbody tr').length`);
+check('a counter filters the sheet to its people, and shows it can be cleared', dueRows === dueN && dueN > 0 && (await evaluate(`!!document.querySelector('.cs-bar .cs-filter.on')`)), `${dueRows} rows, counter ${dueN}`);
+await shot('1b-due-filter');
+await evaluate(`[...document.querySelectorAll('.cs-stat')].find((b) => b.textContent.endsWith('Due')).click()`);
+await sleep(250);
+check('clicking it again shows everyone', (await evaluate(`document.querySelectorAll('.cs-grid tbody tr').length`)) === expected);
 check('every column is editable (no read-only header)', (await evaluate(`document.querySelectorAll('.cs-grid thead th.ro').length`)) === 0);
 await shot('1-overview-sheet');
 

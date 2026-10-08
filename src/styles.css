@@ -1590,6 +1590,7 @@ select.cs-edit { padding: 0 4px; }
 @media (max-width: 980px) {
   .crm.cs { flex-direction: column; }
   .cs-overview { width: auto; max-height: 50%; }
+  .cs-stats { grid-template-columns: repeat(4, 1fr); }
 }
 .shell.phone .cs-bar { flex-wrap: wrap; }
 .shell.phone .cs-search { flex-basis: 100%; width: 100%; }
