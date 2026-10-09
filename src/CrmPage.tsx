@@ -2,24 +2,30 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'rea
 import { createPortal } from 'react-dom';
 import type { Person } from './types';
 import { shortName } from './types';
+import { isPending } from './cloud';
 import { toISO, todayISO } from './dates';
 import { appIdle } from './idle';
+import { Avatar } from './WeekPlan';
 import {
-  arrivedWithin, askCrm, cachedSheet, cameFrom, dueBy, fetchHistory, fetchRecord, fetchSheet, notContacted, ourTurn, subscribeSheet, writePatch, writeSaid,
+  arrivedWithin, askCrm, cachedSheet, cameFrom, dueBy, fetchHistory, fetchRecord, fetchSheet, fetchUserView, isArchived, notContacted, ourTurn, saveUserView, subscribeSheet, writePatch, writeSaid,
   type Change, type ChatTurn, type LastWords, type RecordDetail, type SheetData, type SheetPerson,
 } from './crmSheet';
 
 /**
  * CRM: one page. Left, today's list and the chat with the CRM agent; right, every person as a spreadsheet, live on
- * crm_people. One CRM, no owner and no assignment: anyone updates anything, by hand or through the chat; the latest
- * change wins. Every column is editable and writes to the database; ⌘Z / ⌘⇧Z undo and redo this session's edits
- * (the sheet's, the record's and the chat's), and the record lists every change with its own Undo. The sheet is
- * built for people to read: a short default set of columns (more under "Columns"), human labels, no system values.
+ * crm_people. One CRM: anyone updates anything, by hand or through the chat; the latest change wins. Each person can
+ * have one team member in charge ("In charge", next to the name), so two people never reach out to the same person;
+ * a person chooses it (Take, or the cell's menu), never an agent (iain and Rasmus, 8 Oct). Every column is editable
+ * and writes to the database; ⌘Z / ⌘⇧Z undo and redo this session's edits (the sheet's, the record's and the
+ * chat's), and the record lists every change with its own Undo. The sheet is built for people to read: a short
+ * default set of columns (more under "Columns"), human labels, no system values.
  *
- * Sheet, in the manner of Supabase's table editor: drag a header edge to resize (remembered per machine); click a
- * cell to select it, and a cut-off value shows in full under it; double-click or Enter to edit (text in place,
- * long text, choices and dates in a small editor); arrows move, Tab and Enter commit and move, Escape cancels,
- * Backspace clears, Space opens the person's record, ⌘C copies.
+ * Sheet, in the manner of Supabase's table editor: drag a header edge to resize and a header itself to move the
+ * column; the order, widths and visible columns are each member's own (saved to their account, crm_user_views);
+ * click a cell to select it, and a cut-off value shows in full under it; double-click or Enter to edit (text in
+ * place, long text, choices and dates in a small editor); arrows move, Tab and Enter commit and move, Escape cancels,
+ * Backspace clears, Space opens the person's record, ⌘C copies. Right-click a row to take it, open it or archive it;
+ * archived people leave the sheet and the overview and are listed under the type filter's "Archived".
  *
  * The chat is a conversation: the agent shows what it is doing while it works, what it changed (with Undo), and
  * asks when something is unclear; the next message is read as the answer. Kept per machine, per team.
@@ -57,11 +63,12 @@ const primaryType = (p: SheetPerson): TypeKey | null => {
 };
 
 /* ── columns ── */
-type Kind = 'text' | 'long' | 'link' | 'email' | 'date' | 'stamp' | 'select' | 'stage' | 'types' | 'tags' | 'bool' | 'ro';
+type Kind = 'text' | 'long' | 'link' | 'email' | 'date' | 'stamp' | 'select' | 'stage' | 'types' | 'tags' | 'bool' | 'person' | 'ro';
 interface Col { key: string; label: string; w: number; kind: Kind; options?: Opt[]; optional?: boolean }
 /** Default columns first; the optional ones live under "Columns" and in every record. */
 const COLS: Col[] = [
   { key: 'name', label: 'Name', w: 180, kind: 'text' },
+  { key: 'in_charge_user_id', label: 'In charge', w: 126, kind: 'person' },
   { key: 'types', label: 'Type', w: 168, kind: 'types' },
   { key: '_stage', label: 'Stage', w: 128, kind: 'stage' },
   { key: 'next_action', label: 'Next step', w: 250, kind: 'long' },
@@ -93,29 +100,57 @@ const COLS: Col[] = [
 ];
 const COL = Object.fromEntries(COLS.map((c) => [c.key, c])) as Record<string, Col>;
 /** What a changed column is called where the history, the chat and undo name it. */
-const EXTRA_LABELS: Record<string, string> = { enrichment_headline: 'Who', attribution: 'Came from', flags: 'Tags', emails: 'Emails', first_name: 'First name', last_name: 'Last name', text_body: 'Their message' };
+const EXTRA_LABELS: Record<string, string> = { enrichment_headline: 'Who', attribution: 'Came from', flags: 'Tags', emails: 'Emails', first_name: 'First name', last_name: 'Last name', text_body: 'Their message', archived_at: 'Archived' };
 const labelOf = (k: string) => COL[k]?.label ?? EXTRA_LABELS[k] ?? k.replace(/_/g, ' ');
 const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const editable = (c: Col) => c.kind !== 'ro';
 const inlineText = (c: Col) => c.kind === 'text' || c.kind === 'link' || c.kind === 'email';
 const DEFAULT_VISIBLE = COLS.filter((c) => !c.optional).map((c) => c.key);
+const ALL_KEYS = COLS.map((c) => c.key);
+/** Columns added after a member may already have saved a view: they appear for everyone once (default ones visible). */
+const NEW_SINCE_V1 = ['in_charge_user_id'];
 
-/* ── per-machine view settings (widths, visible columns); browser storage may be unavailable ── */
-const VIEW_KEY = 'exponential-crm-view-v1';
-const loadView = (): { widths: Record<string, number>; visible: string[] } => {
-  try { const v = JSON.parse(localStorage.getItem(VIEW_KEY) || 'null'); if (v && typeof v === 'object') return { widths: v.widths ?? {}, visible: Array.isArray(v.visible) ? v.visible.filter((k: string) => COL[k]) : DEFAULT_VISIBLE }; } catch { /* no storage */ }
-  return { widths: {}, visible: DEFAULT_VISIBLE };
+/* ── each member's own view: column order, widths, visible columns (iain, 9 Oct: "위치이동도 개인이 할 수 있게해줘
+   대신 그건 개인한테만 적용돼야돼") — saved to the member's account (crm_user_views) and kept on the machine too ── */
+interface View { order: string[]; widths: Record<string, number>; visible: string[]; known: string[] }
+/** A saved view made whole against today's columns: unknown keys dropped, new columns placed where they belong
+ *  (default ones shown), Name always first. `legacy` is the per-machine v1 view, which predates `order` and `known`. */
+function normalizeView(raw: unknown, legacy = false): View {
+  const v = (raw && typeof raw === 'object' ? raw : null) as Partial<View> | null;
+  const known = new Set(Array.isArray(v?.known) ? v!.known : v ? (legacy ? ALL_KEYS.filter((k) => !NEW_SINCE_V1.includes(k)) : ALL_KEYS) : ALL_KEYS);
+  const visible = Array.isArray(v?.visible) ? v!.visible.filter((k) => COL[k]) : [...DEFAULT_VISIBLE];
+  for (const c of COLS) if (!c.optional && !known.has(c.key) && !visible.includes(c.key)) visible.push(c.key);
+  const order = Array.isArray(v?.order) ? v!.order.filter((k, i, a) => COL[k] && a.indexOf(k) === i) : [];
+  for (const k of ALL_KEYS) {
+    if (order.includes(k)) continue;
+    const prev = ALL_KEYS.slice(0, ALL_KEYS.indexOf(k)).reverse().find((p) => order.includes(p));
+    order.splice(prev ? order.indexOf(prev) + 1 : 0, 0, k);
+  }
+  const widths: Record<string, number> = {};
+  for (const [k, w] of Object.entries(v?.widths ?? {})) if (COL[k] && typeof w === 'number' && w > 0) widths[k] = w;
+  return { order: ['name', ...order.filter((k) => k !== 'name')], widths, visible, known: ALL_KEYS };
+}
+const VIEW_KEY = (teamId: string, me: string) => `exponential-crm-view-v2:${teamId}:${me}`;
+const LEGACY_VIEW_KEY = 'exponential-crm-view-v1';
+const loadLocalView = (teamId: string, me: string): View => {
+  try {
+    const v2 = localStorage.getItem(VIEW_KEY(teamId, me));
+    if (v2) return normalizeView(JSON.parse(v2));
+    const v1 = localStorage.getItem(LEGACY_VIEW_KEY);
+    if (v1) return normalizeView(JSON.parse(v1), true);
+  } catch { /* no storage */ }
+  return normalizeView(null);
 };
-const saveView = (v: { widths: Record<string, number>; visible: string[] }) => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch { /* no storage */ } };
+const saveLocalView = (teamId: string, me: string, v: View) => { try { localStorage.setItem(VIEW_KEY(teamId, me), JSON.stringify(v)); } catch { /* no storage */ } };
 
 /* The four counters on the left (iain, 7 Oct: the pills above the sheet went, these stay) filter the sheet. */
 type Filter = 'all' | 'due' | 'ourTurn' | 'new' | 'notContacted';
 const FILTER_NAMES: Record<Filter, string> = { all: 'Everyone', due: 'Due', ourTurn: 'Our turn', new: 'New 48h', notContacted: 'Not contacted' };
-type TypeFilter = 'any' | TypeKey | 'other' | 'none';
+type TypeFilter = 'any' | TypeKey | 'other' | 'none' | 'archived';
 const TYPE_FILTERS: { k: TypeFilter; t: string }[] = [
-  { k: 'any', t: 'Type filter' }, { k: 'customer', t: 'Customers' }, { k: 'investor', t: 'Investors' }, { k: 'contributor', t: 'Contributors' }, { k: 'other', t: 'Other' }, { k: 'none', t: 'No type yet' },
+  { k: 'any', t: 'Type filter' }, { k: 'customer', t: 'Customers' }, { k: 'investor', t: 'Investors' }, { k: 'contributor', t: 'Contributors' }, { k: 'other', t: 'Other' }, { k: 'none', t: 'No type yet' }, { k: 'archived', t: 'Archived' },
 ];
-const typePass = (x: SheetPerson, t: TypeFilter) => (t === 'any' ? true : t === 'none' ? !(x.types ?? []).length : (x.types ?? []).includes(t));
+const typePass = (x: SheetPerson, t: TypeFilter) => (t === 'any' || t === 'archived' ? true : t === 'none' ? !(x.types ?? []).length : (x.types ?? []).includes(t));
 
 /* ── formatting ── */
 const thisYear = new Date().getFullYear();
@@ -137,10 +172,15 @@ const one = (s?: string | null, n = 140) => { const t = (s ?? '').replace(/\s+/g
 const nameOf = (p: SheetPerson) => p.name || p.email_normalized || (p.x_handle ? `@${p.x_handle}` : 'Unnamed');
 const who = (p: SheetPerson) => p.enrichment_headline || [p.job_title, p.company].filter(Boolean).join(', ');
 
-interface Ctx { said: Record<string, LastWords> }
+interface Ctx { said: Record<string, LastWords>; members: Person[]; me: string }
+const memberOf = (ctx: Ctx, id?: string | null) => (id ? ctx.members.find((m) => m.id === id) ?? null : null);
+/** The member choices for "In charge": me first, then the others by name. */
+const memberOpts = (ctx: Ctx): Opt[] => [...ctx.members].sort((a, b) => (a.id === ctx.me ? -1 : b.id === ctx.me ? 1 : a.name.localeCompare(b.name)))
+  .map((m) => [m.id, m.id === ctx.me ? `${m.name} (you)` : m.name]);
 /** The full text of a cell as a person reads it (also what ⌘C copies and the peek shows). */
 function text(p: SheetPerson, c: Col, ctx: Ctx): string {
   switch (c.key) {
+    case 'in_charge_user_id': return p.in_charge_user_id ? memberOf(ctx, p.in_charge_user_id)?.name ?? 'Someone' : '';
     case '_stage': { const t = primaryType(p); return t ? optLabel(STAGE_OF[t].opts, p[STAGE_OF[t].col]) : ''; }
     case '_who': return who(p);
     case '_said': return ctx.said[p.id]?.text ?? '';
@@ -178,6 +218,7 @@ function sortKey(p: SheetPerson, c: Col, ctx: Ctx): string | number {
 
 export function CrmPage(p: Props) {
   const { teamId, me, people, cloud } = p;
+  const members = useMemo(() => people.filter((m) => !isPending(m.id)), [people]);
   // seeded from the prewarmed cache so the FIRST painted frame already has rows — the
   // mount effect alone still flashed one empty frame before its setData landed
   const [data, setData] = useState<SheetData>(() => cachedSheet(p.teamId) ?? { people: [], said: {}, loaded: false });
@@ -190,15 +231,52 @@ export function CrmPage(p: Props) {
   const [sel, setSel] = useState<{ id: string; key: string } | null>(null);
   const [edit, setEdit] = useState<{ id: string; key: string; initial?: string } | null>(null);
   const [recordId, setRecordId] = useState<string | null>(null);
-  const [view, setView] = useState(loadView);
+  const [view, setViewState] = useState<View>(() => loadLocalView(p.teamId, p.me));
   const [colsOpen, setColsOpen] = useState(false);
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const [, tick] = useState(0);
 
-  const cols = useMemo(() => COLS.filter((c) => c.key === 'name' || view.visible.includes(c.key)), [view.visible]);
+  /* The view is the member's own: every change is kept on the machine at once and saved to their account shortly after. */
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const viewTouched = useRef(false);
+  const viewSave = useRef<number | null>(null);
+  const setView = (f: (v: View) => View) => {
+    const n = f(viewRef.current);
+    if (n === viewRef.current) return;
+    viewRef.current = n;
+    viewTouched.current = true;
+    setViewState(n);
+    saveLocalView(teamId, me, n);
+    if (viewSave.current) window.clearTimeout(viewSave.current);
+    viewSave.current = window.setTimeout(() => { viewSave.current = null; saveUserView(teamId, me, n, cloud); }, 600);
+  };
+  useEffect(() => {
+    viewTouched.current = false;
+    setViewState(loadLocalView(teamId, me));
+    let alive = true;
+    fetchUserView(teamId, me, cloud).then((saved) => {
+      if (!alive || !saved || viewTouched.current) return; // a change made meanwhile wins, and is saved over it
+      const n = normalizeView(saved);
+      saveLocalView(teamId, me, n);
+      setViewState(n);
+    });
+    return () => { alive = false; };
+  }, [teamId, me, cloud]);
+
+  const cols = useMemo(() => view.order.filter((k) => k === 'name' || view.visible.includes(k)).map((k) => COL[k]).filter(Boolean), [view.order, view.visible]);
   const width = (c: Col) => view.widths[c.key] ?? c.w;
-  const setWidth = (key: string, w: number) => setView((v) => { const n = { ...v, widths: { ...v.widths, [key]: Math.round(Math.max(56, Math.min(900, w))) } }; saveView(n); return n; });
-  const toggleCol = (key: string) => setView((v) => { const vis = v.visible.includes(key) ? v.visible.filter((k) => k !== key) : [...v.visible, key]; const n = { ...v, visible: COLS.map((c) => c.key).filter((k) => vis.includes(k)) }; saveView(n); return n; });
+  const setWidth = (key: string, w: number) => setView((v) => ({ ...v, widths: { ...v.widths, [key]: Math.round(Math.max(56, Math.min(900, w))) } }));
+  const toggleCol = (key: string) => setView((v) => ({ ...v, visible: v.visible.includes(key) ? v.visible.filter((k) => k !== key) : [...v.visible, key] }));
+  /** Move a column in front of another (null: to the end). Name stays first. */
+  const moveCol = (key: string, before: string | null) => setView((v) => {
+    if (key === 'name' || key === before) return v;
+    const rest = v.order.filter((k) => k !== key);
+    const at = before && before !== 'name' ? rest.indexOf(before) : before === 'name' ? 1 : rest.length;
+    rest.splice(at < 0 ? rest.length : at, 0, key);
+    return rest.join() === v.order.join() ? v : { ...v, order: rest };
+  });
 
   const load = () => fetchSheet(teamId, cloud).then((d) => { setData(d); setLoadError(null); }).catch((e) => { const m = String((e as Error).message ?? e); setLoadError(m); p.onError(`CRM: ${m}`); });
   useEffect(() => {
@@ -226,24 +304,26 @@ export function CrmPage(p: Props) {
   if (p.backRef) p.backRef.current = back;
   useEffect(() => () => { if (p.backRef) p.backRef.current = null; }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const ctx: Ctx = useMemo(() => ({ said: data.said }), [data.said]);
+  const ctx: Ctx = useMemo(() => ({ said: data.said, members, me }), [data.said, members, me]);
   const today = todayISO();
-  const visible = useMemo(() => data.people.filter((x) => !(x.flags ?? []).includes('test')), [data.people]);
+  const shown = useMemo(() => data.people.filter((x) => !(x.flags ?? []).includes('test')), [data.people]);
+  const visible = useMemo(() => shown.filter((x) => !isArchived(x)), [shown]);
+  const archived = useMemo(() => shown.filter(isArchived), [shown]);
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase().replace(/^@/, '');
     const col = COL[sort.key] ?? COLS[0];
-    const hit = (x: SheetPerson) => !q || [x.name, x.email_normalized, x.company, x.job_title, x.x_handle, x.phone_as_typed, x.notes, x.next_action, x.enrichment_headline, data.said[x.id]?.text]
+    const hit = (x: SheetPerson) => !q || [x.name, x.email_normalized, x.company, x.job_title, x.x_handle, x.phone_as_typed, x.notes, x.next_action, x.enrichment_headline, data.said[x.id]?.text, text(x, COL.in_charge_user_id, ctx)]
       .some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
-    const pass = (x: SheetPerson) =>
-      filter === 'all' ? true : filter === 'due' ? dueBy(x, today) : filter === 'ourTurn' ? ourTurn(x) : filter === 'new' ? arrivedWithin(x, 48) : notContacted(x);
-    return visible.filter((x) => pass(x) && typePass(x, typeFilter) && hit(x)).sort((a, b) => {
+    const pass = (x: SheetPerson) => typeFilter === 'archived' || filter === 'all' ? true
+      : filter === 'due' ? dueBy(x, today) : filter === 'ourTurn' ? ourTurn(x) : filter === 'new' ? arrivedWithin(x, 48) : notContacted(x);
+    return (typeFilter === 'archived' ? archived : visible).filter((x) => pass(x) && typePass(x, typeFilter) && hit(x)).sort((a, b) => {
       const ka = sortKey(a, col, ctx), kb = sortKey(b, col, ctx);
       if (ka === '' && kb !== '') return 1; // empty cells sink, whichever way the sort runs
       if (kb === '' && ka !== '') return -1;
       if (ka === kb) return +new Date(b.source_at) - +new Date(a.source_at);
       return (ka < kb ? -1 : 1) * sort.dir;
     });
-  }, [visible, filter, typeFilter, query, sort, data.said, today]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [visible, archived, filter, typeFilter, query, sort, data.said, today, ctx]); // eslint-disable-line react-hooks/exhaustive-deps
   const counts = useMemo(() => ({
     all: visible.length,
     due: visible.filter((x) => dueBy(x, today)).length,
@@ -357,6 +437,12 @@ export function CrmPage(p: Props) {
     if (key !== '_stage' && same(value, editValue(person, COL[key] ?? { key, label: key, w: 0, kind: 'text' }, ctx))) return; // nothing changed
     commit(person, patchFor(person, key, value));
   };
+  /** "I take this one": me in charge (again: I let go). A person's choice, written like any other edit (⌘Z undoes). */
+  const take = (person: SheetPerson) => save(person, 'in_charge_user_id', person.in_charge_user_id === me ? null : me);
+  /** Archive: the row leaves the sheet and the overview; nothing is deleted, and the type filter's Archived lists it. */
+  const setArchived = (person: SheetPerson, on: boolean) => commit(person, { archived_at: on ? new Date().toISOString() : null });
+  /** The member menu ("In charge") rides on the column as its options. */
+  const withOpts = (c: Col): Col => (c.kind === 'person' ? { ...c, options: memberOpts(ctx) } : c);
 
   /* ── keyboard and selection ── */
   const focusGrid = () => gridRef.current?.focus({ preventScroll: true });
@@ -437,6 +523,42 @@ export function CrmPage(p: Props) {
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
+  /* Column move: drag a header sideways; it lands in front of the column under the pointer (a click still sorts).
+     Name stays first. The grid scrolls when the pointer nears its edge. */
+  const dragRef = useRef<{ key: string; moved: boolean } | null>(null);
+  const [drag, setDrag] = useState<{ key: string; before: string | null } | null>(null);
+  const dropBefore = (x: number): string | null => {
+    const ths = Array.from(gridRef.current?.querySelectorAll('thead th[data-col]') ?? []) as HTMLElement[];
+    for (const th of ths) { const r = th.getBoundingClientRect(); if (x < r.left + r.width / 2) return th.dataset.col ?? null; }
+    return null;
+  };
+  const startDrag = (e: React.PointerEvent, c: Col) => {
+    if (e.button !== 0 || c.key === 'name') return;
+    const x0 = e.clientX;
+    dragRef.current = { key: c.key, moved: false };
+    const move = (ev: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d || (!d.moved && Math.abs(ev.clientX - x0) < 6)) return;
+      d.moved = true;
+      const wrap = gridRef.current;
+      if (wrap) {
+        const r = wrap.getBoundingClientRect();
+        if (ev.clientX > r.right - 48) wrap.scrollLeft += 16;
+        else if (ev.clientX < r.left + 44 + width(COL.name) + 32) wrap.scrollLeft -= 16;
+      }
+      setDrag({ key: d.key, before: dropBefore(ev.clientX) });
+    };
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      if (dragRef.current?.moved) moveCol(dragRef.current.key, dropBefore(ev.clientX));
+      setDrag(null);
+      window.setTimeout(() => { dragRef.current = null; }, 0); // the click that ends a drag must not sort
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+  const lastCol = cols[cols.length - 1]?.key;
 
   return (
     <div className="crm cs">
@@ -450,19 +572,20 @@ export function CrmPage(p: Props) {
           <input className="cs-search" placeholder="Search name, email, company, notes…" value={query} onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Escape') { setQuery(''); focusGrid(); } if (e.key === 'ArrowDown' || e.key === 'Enter') { e.preventDefault(); if (rows[0]) setSel({ id: rows[0].id, key: 'name' }); focusGrid(); } }} />
           <select className={`cs-type${typeFilter !== 'any' ? ' on' : ''}`} value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as TypeFilter)} aria-label="Type filter">
-            {TYPE_FILTERS.map((t) => <option key={t.k} value={t.k}>{t.k === 'any' ? t.t : `${t.t} (${visible.filter((x) => typePass(x, t.k)).length})`}</option>)}
+            {TYPE_FILTERS.map((t) => <option key={t.k} value={t.k}>{t.k === 'any' ? t.t : `${t.t} (${t.k === 'archived' ? archived.length : visible.filter((x) => typePass(x, t.k)).length})`}</option>)}
           </select>
-          <span className="cs-count">{rows.length === visible.length ? `${visible.length} people` : `${rows.length} of ${visible.length}`}</span>
-          {filter !== 'all' && <button className="cs-filter on" title="Show everyone" onClick={() => setFilter('all')}>{FILTER_NAMES[filter]}<span>×</span></button>}
+          <span className="cs-count">{typeFilter === 'archived' ? `${rows.length} archived` : rows.length === visible.length ? `${visible.length} people` : `${rows.length} of ${visible.length}`}</span>
+          {filter !== 'all' && typeFilter !== 'archived' && <button className="cs-filter on" title="Show everyone" onClick={() => setFilter('all')}>{FILTER_NAMES[filter]}<span>×</span></button>}
           <span className="panel-spacer" />
           <div className="cs-cols-wrap">
             <button className={`cs-filter${colsOpen ? ' on' : ''}`} onClick={() => setColsOpen((o) => !o)}>Columns<span>{cols.length}</span></button>
             {colsOpen && (
               <div className="cs-cols" onMouseLeave={() => setColsOpen(false)}>
-                {COLS.filter((c) => c.key !== 'name').map((c) => (
+                {view.order.filter((k) => k !== 'name').map((k) => COL[k]).map((c) => (
                   <label key={c.key}><input type="checkbox" checked={view.visible.includes(c.key)} onChange={() => toggleCol(c.key)} />{c.label}</label>
                 ))}
-                <button className="cs-cols-reset" onClick={() => { const n = { widths: {}, visible: DEFAULT_VISIBLE }; saveView(n); setView(n); }}>Reset columns and widths</button>
+                <p className="cs-cols-note">Drag a header to move a column. Your layout is yours alone.</p>
+                <button className="cs-cols-reset" onClick={() => setView(() => normalizeView(null))}>Reset order, columns and widths</button>
               </div>
             )}
           </div>
@@ -480,8 +603,11 @@ export function CrmPage(p: Props) {
                 <tr>
                   <th className="cs-num">#</th>
                   {cols.map((c, i) => (
-                    <th key={c.key} className={`${i === 0 ? 'cs-sticky ' : ''}${editable(c) ? '' : 'ro'}`}
-                      onClick={() => setSort((s) => (s.key === c.key ? { key: c.key, dir: (s.dir * -1) as 1 | -1 } : { key: c.key, dir: ['source_at', 'last_outbound_at', 'last_inbound_at', '_said'].includes(c.key) ? -1 : 1 }))}>
+                    <th key={c.key} data-col={c.key}
+                      className={`${i === 0 ? 'cs-sticky ' : 'cs-movable '}${editable(c) ? '' : 'ro'}${drag?.key === c.key ? ' drag-src' : ''}${drag && drag.key !== c.key && drag.before === c.key && c.key !== 'name' ? ' drop-before' : ''}${drag && drag.before === null && c.key === lastCol && drag.key !== c.key ? ' drop-after' : ''}`}
+                      title={i === 0 ? undefined : 'Click to sort, drag to move'}
+                      onPointerDown={(e) => startDrag(e, c)}
+                      onClick={() => { if (dragRef.current?.moved) return; setSort((s) => (s.key === c.key ? { key: c.key, dir: (s.dir * -1) as 1 | -1 } : { key: c.key, dir: ['source_at', 'last_outbound_at', 'last_inbound_at', '_said', 'archived_at'].includes(c.key) ? -1 : 1 })); }}>
                       <span>{c.label}</span>{sort.key === c.key && <i>{sort.dir === 1 ? '↑' : '↓'}</i>}
                       <span className="cs-resize" title="Drag to resize" onPointerDown={(e) => startResize(e, c)} onClick={(e) => e.stopPropagation()} />
                     </th>
@@ -496,24 +622,40 @@ export function CrmPage(p: Props) {
                     onSelect={(key) => { setSel({ id: x.id, key }); if (edit && (edit.id !== x.id || edit.key !== key)) setEdit(null); }}
                     onEdit={(key) => startEdit(x.id, key)}
                     onOpen={() => openRecord(x.id)}
+                    onTake={() => take(x)}
+                    onMenu={(key, cx, cy) => { setSel({ id: x.id, key }); setEdit(null); setMenu({ id: x.id, x: cx, y: cy }); }}
                     onInlineDone={(key, v, move) => { if (v !== undefined) save(x, key, v); done(move); }} />
                 ))}
               </tbody>
             </table>
-            {data.loaded && rows.length === 0 && <div className="cs-empty">{query ? `Nobody matches “${query}”.` : 'Nobody here.'}</div>}
+            {data.loaded && rows.length === 0 && <div className="cs-empty">{query ? `Nobody matches “${query}”.` : typeFilter === 'archived' ? 'Nothing archived. Right-click a row to archive it.' : 'Nobody here.'}</div>}
             {!data.loaded && !loadError && <div className="cs-empty">Loading…</div>}
           </div>
         )}
         {record && (
-          <RecordPanel key={record.id} person={record} said={data.said[record.id]} people={people} cloud={cloud} ctx={ctx}
+          <RecordPanel key={record.id} person={record} said={data.said[record.id]} people={people} cloud={cloud} ctx={ctx} withOpts={withOpts}
+            onTake={() => take(record)} onArchive={(on) => setArchived(record, on)}
             onClose={() => { setRecordId(null); focusGrid(); }} onSave={(key, v) => save(record, key, v)} onUndo={(patch) => commit(record, patch)} onError={p.onError} />
         )}
       </section>
       {editing && editCol && !inlineText(editCol) && (
         <Popover anchor={cellEl(editing.id, editCol.key)}>
-          <FieldEditor col={editCol} person={editing} value={editValue(editing, editCol, ctx)} initial={edit?.initial} onDone={(v, move) => { if (v !== undefined) save(editing, editCol.key, v); done(move); }} />
+          <FieldEditor col={withOpts(editCol)} person={editing} value={editValue(editing, editCol, ctx)} initial={edit?.initial} onDone={(v, move) => { if (v !== undefined) save(editing, editCol.key, v); done(move); }} />
         </Popover>
       )}
+      {menu && (() => {
+        const person = data.people.find((x) => x.id === menu.id);
+        if (!person) return null;
+        const holder = memberOf(ctx, person.in_charge_user_id);
+        const items: { t: string; run: () => void; danger?: boolean }[] = [
+          person.in_charge_user_id === me
+            ? { t: 'Let go (nobody in charge)', run: () => take(person) }
+            : { t: holder ? `Take over from ${shortName(holder.name)}` : 'Take this one', run: () => take(person) },
+          { t: 'Open the record', run: () => openRecord(person.id) },
+          isArchived(person) ? { t: 'Unarchive', run: () => setArchived(person, false) } : { t: 'Archive', run: () => setArchived(person, true), danger: true },
+        ];
+        return <RowMenu x={menu.x} y={menu.y} title={nameOf(person)} items={items} onClose={() => { setMenu(null); focusGrid(); }} />;
+      })()}
       {peek && !edit && createPortal(
         <div className="cs-peek" style={{ left: Math.min(peek.rect.left, window.innerWidth - 440), top: peek.rect.bottom + 2, minWidth: Math.min(peek.rect.width, 420) }}>{peek.text}</div>,
         document.body,
@@ -553,10 +695,10 @@ function Overview({ data, visible, today, cloud, teamId, ctx, scope, counts, fil
       </div>
       <div className="cs-ov-scroll">
         {!data.loaded && <div className="cs-empty">Loading…</div>}
-        <OvSection title="Due" list={due} limit={6} line={(x) => step(x) || 'Next step due'} meta={(x) => fmtDay(x.next_action_due)} metaHot={(x) => (x.next_action_due ?? '') < today} onPerson={onPerson} onMore={() => onFilter('due')} />
-        <OvSection title="Our turn" hint="They answered; the next word is ours" list={turn} limit={6} line={(x) => one(data.said[x.id]?.text, 90) || one(who(x), 90)} meta={(x) => ago(x.last_inbound_at)} onPerson={onPerson} onMore={() => onFilter('ourTurn')} />
-        <OvSection title="New" hint="Arrived in the last 48 hours" list={fresh} limit={6} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} onMore={() => onFilter('new')} />
-        <OvSection title="Not contacted yet" list={waiting} limit={6} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} onMore={() => onFilter('notContacted')} />
+        <OvSection title="Due" ctx={ctx} list={due} limit={6} line={(x) => step(x) || 'Next step due'} meta={(x) => fmtDay(x.next_action_due)} metaHot={(x) => (x.next_action_due ?? '') < today} onPerson={onPerson} onMore={() => onFilter('due')} />
+        <OvSection title="Our turn" ctx={ctx} hint="They answered; the next word is ours" list={turn} limit={6} line={(x) => one(data.said[x.id]?.text, 90) || one(who(x), 90)} meta={(x) => ago(x.last_inbound_at)} onPerson={onPerson} onMore={() => onFilter('ourTurn')} />
+        <OvSection title="New" ctx={ctx} hint="Arrived in the last 48 hours" list={fresh} limit={6} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} onMore={() => onFilter('new')} />
+        <OvSection title="Not contacted yet" ctx={ctx} list={waiting} limit={6} line={(x) => one(who(x), 90) || one(data.said[x.id]?.text, 90)} meta={(x) => ago(x.source_at)} onPerson={onPerson} onMore={() => onFilter('notContacted')} />
         {data.loaded && !due.length && !turn.length && !fresh.length && !waiting.length && <div className="cs-empty">Nobody is waiting on us.</div>}
       </div>
       {cloud && <ChatPanel teamId={teamId} people={data.people} ctx={ctx} scope={scope} onError={onError} onPerson={onPerson} onApplied={onApplied} onUndoTurn={onUndoTurn} />}
@@ -564,20 +706,24 @@ function Overview({ data, visible, today, cloud, teamId, ctx, scope, counts, fil
   );
 }
 
-function OvSection({ title, hint, list, limit, line, meta, metaHot, onPerson, onMore }: {
-  title: string; hint?: string; list: SheetPerson[]; limit: number; line: (x: SheetPerson) => string; meta: (x: SheetPerson) => string;
+function OvSection({ title, ctx, hint, list, limit, line, meta, metaHot, onPerson, onMore }: {
+  title: string; ctx: Ctx; hint?: string; list: SheetPerson[]; limit: number; line: (x: SheetPerson) => string; meta: (x: SheetPerson) => string;
   metaHot?: (x: SheetPerson) => boolean; onPerson: (id: string) => void; onMore: () => void;
 }) {
   if (!list.length) return null;
   return (
     <section className="cs-ov-sec">
       <h2 title={hint}>{title} <span>{list.length}</span></h2>
-      {list.slice(0, limit).map((x) => (
-        <button key={x.id} className="cs-ov-row" onClick={() => onPerson(x.id)}>
-          <span className="cs-ov-main"><b>{nameOf(x)}</b><em>{line(x) || x.email_normalized || ''}</em></span>
-          <span className={`cs-ov-meta${metaHot?.(x) ? ' hot' : ''}`}>{meta(x)}</span>
-        </button>
-      ))}
+      {list.slice(0, limit).map((x) => {
+        const m = memberOf(ctx, x.in_charge_user_id);
+        return (
+          <button key={x.id} className="cs-ov-row" onClick={() => onPerson(x.id)}>
+            <span className="cs-ov-main"><b>{nameOf(x)}</b><em>{line(x) || x.email_normalized || ''}</em></span>
+            {m && <span className="cs-ov-who" title={`${m.name} is in charge`}><Avatar person={m} size={16} /></span>}
+            <span className={`cs-ov-meta${metaHot?.(x) ? ' hot' : ''}`}>{meta(x)}</span>
+          </button>
+        );
+      })}
       {list.length > limit && <button className="cs-ov-more" onClick={onMore}>All {list.length} in the sheet →</button>}
     </section>
   );
@@ -585,14 +731,21 @@ function OvSection({ title, hint, list, limit, line, meta, metaHot, onPerson, on
 
 /* ─── the sheet ─────────────────────────────────────── */
 
-const Row = memo(function Row({ person, n, ctx, cols, said, today, selKey, editKey, initial, open, onSelect, onEdit, onOpen, onInlineDone }: {
+const Row = memo(function Row({ person, n, ctx, cols, said, today, selKey, editKey, initial, open, onSelect, onEdit, onOpen, onTake, onMenu, onInlineDone }: {
   person: SheetPerson; n: number; ctx: Ctx; cols: Col[]; said?: LastWords; today: string; selKey: string | null; editKey: string | null; initial?: string; open: boolean;
-  onSelect: (key: string) => void; onEdit: (key: string) => void; onOpen: () => void; onInlineDone: (key: string, v: unknown | undefined, move?: 'down' | 'right' | 'left') => void;
+  onSelect: (key: string) => void; onEdit: (key: string) => void; onOpen: () => void; onTake: () => void; onMenu: (key: string, x: number, y: number) => void;
+  onInlineDone: (key: string, v: unknown | undefined, move?: 'down' | 'right' | 'left') => void;
 }) {
   void said; // a prop only so a new message re-renders the row
   const dim = person.do_not_contact || ['cancelled', 'refunded'].includes(person.customer_stage ?? '');
   return (
-    <tr className={`${selKey ? 'sel' : ''}${open ? ' open' : ''}${dim ? ' dim' : ''}`}>
+    <tr className={`${selKey ? 'sel' : ''}${open ? ' open' : ''}${dim ? ' dim' : ''}`}
+      onContextMenu={(e) => {
+        if ((e.target as HTMLElement).closest('.cs-edit')) return; // a text editor keeps the browser's own menu
+        e.preventDefault();
+        const key = ((e.target as HTMLElement).closest('td[data-cell]') as HTMLElement | null)?.dataset.cell?.split(':')[1] ?? 'name';
+        onMenu(key, e.clientX, e.clientY);
+      }}>
       <td className="cs-num" onClick={onOpen} title="Open the record (Space)">{n}</td>
       {cols.map((c, i) => {
         const isEdit = editKey === c.key;
@@ -608,7 +761,7 @@ const Row = memo(function Row({ person, n, ctx, cols, said, today, selKey, editK
               (e.currentTarget.closest('.cs-grid-wrap') as HTMLElement | null)?.focus({ preventScroll: true });
             }}
             onDoubleClick={() => { if (c.kind !== 'bool') onEdit(c.key); }}>
-            {isEdit ? <InlineEditor col={c} value={editValue(person, c, ctx)} initial={initial} onDone={(v, move) => onInlineDone(c.key, v, move)} /> : <Cell person={person} col={c} ctx={ctx} today={today} onOpen={onOpen} onToggle={() => onEdit(c.key)} />}
+            {isEdit ? <InlineEditor col={c} value={editValue(person, c, ctx)} initial={initial} onDone={(v, move) => onInlineDone(c.key, v, move)} /> : <Cell person={person} col={c} ctx={ctx} today={today} onOpen={onOpen} onToggle={() => onEdit(c.key)} onTake={onTake} />}
           </td>
         );
       })}
@@ -616,9 +769,20 @@ const Row = memo(function Row({ person, n, ctx, cols, said, today, selKey, editK
   );
 });
 
-function Cell({ person, col, ctx, today, onOpen, onToggle }: { person: SheetPerson; col: Col; ctx: Ctx; today: string; onOpen: () => void; onToggle: () => void }) {
+function Cell({ person, col, ctx, today, onOpen, onToggle, onTake }: { person: SheetPerson; col: Col; ctx: Ctx; today: string; onOpen: () => void; onToggle: () => void; onTake: () => void }) {
   const t = text(person, col, ctx);
   switch (col.key) {
+    case 'in_charge_user_id': {
+      const m = memberOf(ctx, person.in_charge_user_id);
+      if (!person.in_charge_user_id) {
+        return <div className="cs-v cs-incharge"><button className="cs-take" title="Put yourself in charge of this person" onMouseDown={(e) => e.stopPropagation()} onClick={onTake}>Take</button></div>;
+      }
+      return (
+        <div className={`cs-v cs-incharge${person.in_charge_user_id === ctx.me ? ' mine' : ''}`} title={`${t} is in charge`}>
+          {m && <Avatar person={m} size={16} />}<span className="cs-ic-name">{m ? shortName(m.name) : 'Someone'}</span>
+        </div>
+      );
+    }
     case 'name':
       return (
         <div className="cs-v cs-name">
@@ -681,6 +845,46 @@ function Popover({ anchor, children }: { anchor: HTMLElement | null; children: R
   return createPortal(<div className="cs-pop" style={{ left: pos.left, top: pos.top, minWidth: pos.minWidth }}>{children}</div>, document.body);
 }
 
+/* The row's right-click menu, at the pointer: Take / Let go, Open, Archive / Unarchive. Closes on a click elsewhere,
+   Escape, scroll or a pick. Arrow keys and Enter work too. */
+function RowMenu({ x, y, title, items, onClose }: { x: number; y: number; title: string; items: { t: string; run: () => void; danger?: boolean }[]; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ left: x, top: y });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({ left: Math.max(8, Math.min(x, window.innerWidth - r.width - 8)), top: Math.max(8, Math.min(y, window.innerHeight - r.height - 8)) });
+    (el.querySelector('button') as HTMLButtonElement | null)?.focus();
+  }, [x, y]);
+  useEffect(() => {
+    const away = (e: PointerEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose(); } };
+    const scroll = () => onClose();
+    window.addEventListener('pointerdown', away, true);
+    window.addEventListener('keydown', esc, true);
+    window.addEventListener('wheel', scroll, { passive: true });
+    return () => { window.removeEventListener('pointerdown', away, true); window.removeEventListener('keydown', esc, true); window.removeEventListener('wheel', scroll); };
+  }, [onClose]);
+  return createPortal(
+    <div className="cs-pop cs-ctx" ref={ref} style={pos} role="menu"
+      onKeyDown={(e) => {
+        const btns = Array.from(ref.current?.querySelectorAll('button') ?? []) as HTMLButtonElement[];
+        const at = btns.indexOf(document.activeElement as HTMLButtonElement);
+        if (e.key === 'ArrowDown') { e.preventDefault(); btns[Math.min(btns.length - 1, at + 1)]?.focus(); }
+        if (e.key === 'ArrowUp') { e.preventDefault(); btns[Math.max(0, at - 1)]?.focus(); }
+      }}>
+      <div className="cs-menu">
+        <div className="cs-menu-h">{title}</div>
+        {items.map((it) => (
+          <button key={it.t} role="menuitem" data-v={it.t} className={it.danger ? 'danger' : ''} onClick={() => { onClose(); it.run(); }}>{it.t}</button>
+        ))}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 /* The editor for everything that is not short text: long text (with the step kind for the next step), choices,
    types, dates, yes/no. Saves on Enter / ⌘Enter / click-away / choosing; Escape cancels. */
 function FieldEditor({ col, person, value, initial, onDone }: { col: Col; person: SheetPerson; value?: unknown; initial?: string; onDone: (v: unknown | undefined, move?: 'down' | 'right' | 'left') => void }) {
@@ -704,7 +908,7 @@ function FieldEditor({ col, person, value, initial, onDone }: { col: Col; person
     finish(valueNow(), move);
   };
   useEffect(() => {
-    const away = (e: PointerEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) { if (col.kind === 'select' || col.kind === 'stage') finish(undefined); else commitNow(); } };
+    const away = (e: PointerEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) { if (col.kind === 'select' || col.kind === 'stage' || col.kind === 'person') finish(undefined); else commitNow(); } };
     window.addEventListener('pointerdown', away, true);
     return () => window.removeEventListener('pointerdown', away, true);
   }); // re-bound each render so commitNow sees the latest draft
@@ -714,7 +918,7 @@ function FieldEditor({ col, person, value, initial, onDone }: { col: Col; person
     else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || (col.kind !== 'long' || col.key === 'next_action')) && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); commitNow('down'); }
   };
 
-  if (col.kind === 'select' || col.kind === 'stage') {
+  if (col.kind === 'select' || col.kind === 'stage' || col.kind === 'person') {
     const pt = primaryType(person);
     const groups: { t: string; opts: Opt[]; prefix?: TypeKey }[] = col.kind === 'stage'
       ? (pt ? [{ t: optLabel(TYPES, pt) + ' stage', opts: STAGE_OF[pt].opts, prefix: pt }] : (Object.keys(STAGE_OF) as TypeKey[]).map((t) => ({ t: optLabel(TYPES, t), opts: STAGE_OF[t].opts, prefix: t })))
@@ -738,7 +942,7 @@ function FieldEditor({ col, person, value, initial, onDone }: { col: Col; person
             ); })}
           </div>
         ))}
-        <button className="cs-menu-clear" onClick={() => finish(null, 'down')}>Clear</button>
+        <button className="cs-menu-clear" onClick={() => finish(null, 'down')}>{col.kind === 'person' ? 'Nobody' : 'Clear'}</button>
       </div>
     );
   }
@@ -802,13 +1006,14 @@ function FieldEditor({ col, person, value, initial, onDone }: { col: Col; person
 /* ─── one person's record ───────────────────────────── */
 
 const SECTIONS: { t: string; keys: string[] }[] = [
-  { t: 'Relationship', keys: ['types', 'customer_stage', 'investor_stage', 'contributor_stage', 'contributor_kind', 'next_action', 'next_action_due', 'last_outbound_at', 'notes', 'do_not_contact'] },
+  { t: 'Relationship', keys: ['in_charge_user_id', 'types', 'customer_stage', 'investor_stage', 'contributor_stage', 'contributor_kind', 'next_action', 'next_action_due', 'last_outbound_at', 'notes', 'do_not_contact'] },
   { t: 'Person', keys: ['name', 'email_normalized', 'phone_as_typed', 'company', 'job_title', 'location_text', 'linkedin_url', 'x_handle', 'investor_firm', 'investor_notes'] },
   { t: 'Context', keys: ['_who', 'summary', '_said', '_from', 'source_at', 'last_inbound_at', '_tags'] },
 ];
 
-function RecordPanel({ person, said, people, cloud, ctx, onClose, onSave, onUndo, onError }: {
-  person: SheetPerson; said?: LastWords; people: Person[]; cloud: boolean; ctx: Ctx;
+function RecordPanel({ person, said, people, cloud, ctx, withOpts, onTake, onArchive, onClose, onSave, onUndo, onError }: {
+  person: SheetPerson; said?: LastWords; people: Person[]; cloud: boolean; ctx: Ctx; withOpts: (c: Col) => Col;
+  onTake: () => void; onArchive: (on: boolean) => void;
   onClose: () => void; onSave: (key: string, v: unknown) => void; onUndo: (patch: Record<string, unknown>) => void; onError: (m: string) => void;
 }) {
   const [detail, setDetail] = useState<RecordDetail | null>(null);
@@ -839,6 +1044,7 @@ function RecordPanel({ person, said, people, cloud, ctx, onClose, onSave, onUndo
     if (v === null || v === undefined || v === '' || (Array.isArray(v) && !v.length)) return 'empty';
     if (k === 'attribution') return cameFrom({ ...person, attribution: v } as SheetPerson) || 'empty';
     if (k === 'flags') return (v as string[]).map((f) => TAGS[f]).filter(Boolean).join(', ') || 'empty';
+    if (k === 'archived_at') return `archived ${fmtStamp(String(v))}`;
     const c = COL[k];
     return c ? text({ ...person, [k]: v } as SheetPerson, c, ctx) || String(v) : (Array.isArray(v) ? v.join(', ') : String(v));
   };
@@ -857,9 +1063,12 @@ function RecordPanel({ person, said, people, cloud, ctx, onClose, onSave, onUndo
           <h2>{nameOf(person)}</h2>
           <span>{who(person) || person.email_normalized}</span>
         </div>
+        {!person.in_charge_user_id && <button className="pill small" title="Put yourself in charge of this person" onClick={onTake}>Take</button>}
+        <button className="cs-link-btn" title={isArchived(person) ? 'Put back on the sheet' : 'Take off the sheet; nothing is deleted'} onClick={() => onArchive(!isArchived(person))}>{isArchived(person) ? 'Unarchive' : 'Archive'}</button>
         <button className="icon-btn" title="Close (Esc)" onClick={onClose}><XGlyph /></button>
       </header>
       <div className="cs-rec-scroll">
+        {isArchived(person) && <p className="cs-note cs-rec-archived">Archived {fmtStamp(person.archived_at)}. Not on the sheet or in Today; nothing was deleted.</p>}
         <p className="cs-note cs-rec-hint">Every field is editable: click it. To tell the CRM what happened, use the chat on the left; it is about {nameOf(person)} while this is open.</p>
         {SECTIONS.map((s) => (
           <section key={s.t} className="cs-rec-sec">
@@ -912,7 +1121,7 @@ function RecordPanel({ person, said, people, cloud, ctx, onClose, onSave, onUndo
             {history.map((c) => (
               <div key={c.id} className="cs-change">
                 <div className="cs-msg-head"><b>{by(c)}</b><span>{stamp(c.at)}</span></div>
-                {Object.keys(c.after ?? {}).filter((k) => COL[k] || ['enrichment_headline', 'attribution', 'flags'].includes(k)).map((k) => {
+                {Object.keys(c.after ?? {}).filter((k) => COL[k] || ['enrichment_headline', 'attribution', 'flags', 'archived_at'].includes(k)).map((k) => {
                   const after = (c.after ?? {})[k];
                   const before = (c.before ?? {})[k] ?? null;
                   const current = JSON.stringify(person[k] ?? null) === JSON.stringify(after ?? null);
@@ -956,7 +1165,7 @@ function RecordPanel({ person, said, people, cloud, ctx, onClose, onSave, onUndo
         <Popover anchor={editing.el}>
           {inlineText(editCol)
             ? <TextPopEditor col={editCol} value={editValue(person, editCol, ctx)} onDone={(v) => { setEditing(null); if (v !== undefined) onSave(editing.key, v); }} />
-            : <FieldEditor col={editCol} person={person} value={editValue(person, editCol, ctx)} onDone={(v) => { setEditing(null); if (v !== undefined) onSave(editing.key, v); }} />}
+            : <FieldEditor col={withOpts(editCol)} person={person} value={editValue(person, editCol, ctx)} onDone={(v) => { setEditing(null); if (v !== undefined) onSave(editing.key, v); }} />}
         </Popover>
       )}
     </aside>

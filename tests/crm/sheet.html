@@ -52,6 +52,7 @@ const people = first.map((f, i) => {
     next_action_due: i % 5 === 2 ? day(i % 2 ? -1 : 0) : i % 7 === 3 ? day(3) : null,
     last_inbound_at: replied ? iso(i * 2) : iso(i < 5 ? i * 6 + 1 : i * 19), last_outbound_at: contacted ? iso(i * 5 + 30) : null, last_touch_channel: null,
     consent_marketing_at: null, consent_source: null, do_not_contact: i === 17, flags: i === 35 ? ['test'] : [], merged_into: null, created_by: 'system:website_form', created_at: iso(i * 19), updated_at: iso(1),
+    in_charge_user_id: i % 9 === 2 ? 'u-rasmus' : i % 9 === 5 ? 'u-iain' : null, archived_at: i === 33 ? iso(5) : null,
     notes: i % 9 === 4 ? 'Met at the open day. Prefers text.' : null,
     enrichment: heads[i % heads.length] ? { identity: { match: ['likely', 'confirmed', 'not_found', 'ambiguous', 'likely'][i % 5], reason: 'Matched on the company email domain and a LinkedIn profile that links to it.' },
       headline: heads[i % heads.length], summary: 'Synthetic summary for the fixture. The main uncertainty is whether the profile found is really this person.',
@@ -68,6 +69,11 @@ const db = {
   crm_interactions: [{ id: 'i-1', team_id: TEAM, person_id: 'p-002', channel: 'email', direction: 'outbound', occurred_at: iso(40), summary: 'Sent the hangar invitation.', body: null, source_url: null, external_ref: null, actor_user_id: 'u-iain', created_by: 'user' }],
   crm_reservations: [],
   crm_audit: [],
+  // another member's saved view: proves one account's layout never reaches another (the stub keys rows by user)
+  crm_user_views: [{ user_id: 'u-rasmus', team_id: TEAM, updated_at: iso(2), view: { order: ['name', 'notes', 'types'], widths: { notes: 300 }, visible: ['types', 'notes'],
+    known: ['name', 'in_charge_user_id', 'types', '_stage', 'next_action', 'next_action_due', 'last_outbound_at', '_who', '_said', 'notes', 'email_normalized', 'phone_as_typed', '_from', 'source_at',
+      'company', 'job_title', 'location_text', 'linkedin_url', 'x_handle', 'next_action_kind', 'customer_stage', 'investor_stage', 'investor_firm', 'investor_notes', 'contributor_kind', 'contributor_stage',
+      'summary', '_tags', 'last_inbound_at', 'do_not_contact'] } }],
 };
 window.__db = db; window.__writes = []; window.__rt = {};
 
@@ -77,11 +83,18 @@ function from(table) {
     select() { return api; }, eq(c, v) { st.filters.push((r) => r[c] === v); return api; }, is(c, v) { st.filters.push((r) => (r[c] ?? null) === v); return api; },
     not(c, _op, v) { st.filters.push((r) => (r[c] ?? null) !== v); return api; }, in(c, vs) { st.filters.push((r) => vs.includes(r[c])); return api; }, or() { return api; },
     order(c, o = {}) { st.orders.push([c, o.ascending !== false]); return api; }, limit(n) { st.limit = n; return api; }, range(a, b) { st.range = [a, b]; return api; },
-    update(p) { st.op = 'update'; st.patch = p; return api; }, insert(row) { st.op = 'insert'; st.patch = row; return api; },
+    update(p) { st.op = 'update'; st.patch = p; return api; }, insert(row) { st.op = 'insert'; st.patch = row; return api; }, upsert(row) { st.op = 'upsert'; st.patch = row; return api; },
     single() { st.single = true; return api; }, maybeSingle() { st.single = true; return api; },
     then(res, rej) { return new Promise((r) => setTimeout(r, 30)).then(run).then(res, rej); },
   };
   function run() {
+    if (st.op === 'upsert') { // crm_user_views: one row per (user_id, team_id)
+      const rows = (db[table] ??= []);
+      const i = rows.findIndex((r) => r.user_id === st.patch.user_id && r.team_id === st.patch.team_id);
+      if (i >= 0) rows[i] = { ...rows[i], ...JSON.parse(JSON.stringify(st.patch)) }; else rows.push(JSON.parse(JSON.stringify(st.patch)));
+      window.__writes.push({ table, op: 'upsert', row: st.patch });
+      return { data: null, error: null };
+    }
     if (st.op === 'insert') { const row = { id: Math.floor(Math.random() * 1e9), at: new Date().toISOString(), ok: true, ...st.patch }; (db[table] ??= []).push(row); window.__writes.push({ table, op: 'insert', row: st.patch }); return { data: st.single ? { ...row } : null, error: null }; }
     let hit = (db[table] ?? []).filter((r) => st.filters.every((f) => f(r)));
     if (st.op === 'update') { for (const r of hit) Object.assign(r, st.patch, { updated_at: new Date().toISOString() }); window.__writes.push({ table, op: 'update', patch: st.patch, ids: hit.map((r) => r.id) }); }
@@ -131,7 +144,7 @@ const team = [{ id: 'u-iain', name: 'Alex Morgan', color: '#0a84ff' }, { id: 'u-
 document.body.style.cssText = 'margin:0;height:100vh;background:var(--bg);display:flex;padding:18px;box-sizing:border-box';
 createRoot(document.getElementById('root')).render(
   React.createElement('div', { className: 'main crm-active', style: { flex: 1, height: 'calc(100vh - 36px)', display: 'flex' } },
-    React.createElement(CrmPage, { teamId: TEAM, me: 'u-iain', people: team, cloud: true, onClose: () => {}, onError: (m) => { window.__errors = [...(window.__errors ?? []), m]; console.error(m); } })));
+    React.createElement(CrmPage, { teamId: TEAM, me: new URL(location.href).searchParams.get('me') || 'u-iain', people: team, cloud: true, onClose: () => {}, onError: (m) => { window.__errors = [...(window.__errors ?? []), m]; console.error(m); } })));
 document.getElementById('root').style.cssText = 'flex:1;display:flex;min-width:0';
 </script>
 </body></html>

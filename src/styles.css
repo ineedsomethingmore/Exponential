@@ -1701,6 +1701,25 @@ select.cs-edit { padding: 0 4px; }
 .cs-cols label:hover { background: var(--row-hov); }
 .cs-cols-reset { margin-top: 4px; padding: 6px 8px; font-size: 11.5px; color: var(--text-3); text-align: left; border-top: 1px solid var(--line); }
 .cs-link-btn { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--accent); text-transform: none; letter-spacing: 0; }
+/* In charge: avatar + short name; an empty cell offers Take on hover or when selected */
+.cs-incharge { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cs-ic-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cs-incharge.mine .cs-ic-name { color: var(--accent); font-weight: 600; }
+.cs-take { padding: 1px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 600; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--line); opacity: 0; }
+.cs-grid tr:hover .cs-take, .cs-grid td.cur .cs-take, .cs-take:focus-visible { opacity: 1; }
+.cs-take:hover { color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.cs-ov-who { flex: none; display: inline-flex; }
+/* header drag to move a column */
+.cs-grid thead th.cs-movable { cursor: grab; }
+.cs-grid thead th.drag-src { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--frost)); }
+.cs-grid thead th.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
+.cs-grid thead th.drop-after { box-shadow: inset -2px 0 0 var(--accent); }
+.cs-cols-note { margin: 4px 0 0; padding: 6px 8px 2px; font-size: 11px; color: var(--text-3); border-top: 1px solid var(--line); }
+.cs-cols-note + .cs-cols-reset { border-top: 0; margin-top: 0; }
+/* the row's right-click menu */
+.cs-ctx .cs-menu { min-width: 200px; max-height: none; }
+.cs-ctx .cs-menu button.danger { color: var(--today); }
+.cs-rec-archived { margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: var(--soft); }
 .cs-rawbox summary { cursor: pointer; font-size: 11.5px; color: var(--text-3); font-weight: 600; padding: 4px 0; }
 .cs-rawbox[open] summary { margin-bottom: 6px; }
 .cs-msg.sys { opacity: 0.7; }

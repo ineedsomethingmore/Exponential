@@ -67,8 +67,10 @@ await sleep(400);
 
 // 1. load and counts
 const rows = await evaluate(`document.querySelectorAll('.cs-grid tbody tr').length`);
-const expected = await evaluate(`window.__db.crm_people.filter((p) => !(p.flags || []).includes('test')).length`);
-check('sheet shows every person except test rows', rows === expected, `${rows} rows, ${expected} expected`);
+const expected = await evaluate(`window.__db.crm_people.filter((p) => !(p.flags || []).includes('test') && !p.archived_at).length`);
+check('sheet shows every person except test and archived rows', rows === expected, `${rows} rows, ${expected} expected`);
+const heads = () => evaluate(`[...document.querySelectorAll('.cs-grid thead th[data-col]')].map((t) => t.dataset.col).join(',')`);
+check('In charge is the column right after Name', (await heads()).startsWith('name,in_charge_user_id,types'), await heads());
 check('no status pills above the sheet, one type filter labelled as a filter',
   (await evaluate(`document.querySelectorAll('.cs-filters').length`)) === 0 && (await evaluate(`document.querySelector('select.cs-type option:checked').textContent`)) === 'Type filter');
 // the four counters on the left stay, and filter the sheet (iain, 7 Oct)
@@ -210,7 +212,7 @@ for (let k = 1; k <= 8; k++) await send('Input.dispatchMouseEvent', { type: 'mou
 await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hc[0] + 120, y: hc[1], button: 'left', clickCount: 1 });
 await sleep(200);
 const w1 = await evaluate(`document.querySelector('${cellSel('notes')}').getBoundingClientRect().width`);
-const saved = await evaluate(`(() => { try { return JSON.parse(localStorage.getItem('exponential-crm-view-v1')).widths.notes; } catch (e) { return null; } })()`);
+const saved = await evaluate(`(() => { try { return JSON.parse(localStorage.getItem('exponential-crm-view-v2:team-fixture:u-iain')).widths.notes; } catch (e) { return null; } })()`);
 check('dragging a header edge resizes and is remembered', w1 > w0 + 80 && saved > 0, `${w0} -> ${w1}, saved ${saved}`);
 
 // 3b4. Columns: an optional column can be shown
@@ -220,6 +222,55 @@ await sleep(200);
 check('an optional column can be shown', (await evaluate(`[...document.querySelectorAll('.cs-grid thead th')].some((t) => t.textContent.startsWith('Company'))`)) === true);
 await evaluate(`[...document.querySelectorAll('.cs-cols label')].find((l) => l.textContent === 'Company').querySelector('input').click()`);
 await click('.cs-cols-wrap > button');
+
+// 3b5. In charge: Take puts me in charge (one column + one audit line), ⌘Z takes it back; the cell's menu picks anyone
+await evaluate(`document.querySelector('.cs-grid-wrap').scrollLeft = 0`);
+const freeId = await evaluate(`(() => { const td = [...document.querySelectorAll('td[data-cell$=":in_charge_user_id"]')].find((t) => t.querySelector('.cs-take')); return td && td.dataset.cell.split(':')[0]; })()`);
+const nW = await evaluate(`window.__writes.length`);
+await click(`td[data-cell="${freeId}:in_charge_user_id"] .cs-take`);
+await sleep(300);
+const tw = JSON.parse(await evaluate(`JSON.stringify(window.__writes.slice(${nW}))`));
+check('Take puts me in charge: one column written, one audit line', (await person(freeId)).in_charge_user_id === 'u-iain'
+  && tw.some((w) => w.table === 'crm_people' && JSON.stringify(w.patch) === '{"in_charge_user_id":"u-iain"}')
+  && tw.some((w) => w.table === 'crm_audit' && w.row.surface === 'app:sheet' && w.row.after.in_charge_user_id === 'u-iain'), JSON.stringify(tw).slice(0, 300));
+check('and the cell shows who', /Alex M\./.test(await evaluate(`document.querySelector('td[data-cell="${freeId}:in_charge_user_id"]').textContent`)));
+await shot('2d-in-charge');
+await click(`td[data-cell="${freeId}:notes"]`);
+await key('z', 'KeyZ', undefined, 2);
+await sleep(300);
+check('Ctrl+Z lets go again', !(await person(freeId)).in_charge_user_id);
+await evaluate(`document.querySelector('.cs-grid-wrap').scrollLeft = 0`);
+const ic = await evaluate(`(() => { const r = document.querySelector('td[data-cell="${freeId}:in_charge_user_id"]').getBoundingClientRect(); return [r.right - 8, r.top + r.height / 2]; })()`);
+await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: ic[0], y: ic[1], button: 'left', clickCount: 1 });
+await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: ic[0], y: ic[1], button: 'left', clickCount: 1 });
+await sleep(120);
+await key('Enter', 'Enter', '\r');
+await sleep(150);
+const opts = await evaluate(`[...document.querySelectorAll('.cs-pop button[data-v]')].map((b) => b.textContent).join('|')`);
+check('the In charge menu lists the team, me first', opts.startsWith('Alex Morgan (you)') && opts.includes('Sam Lee') && opts.includes('Kim Park'), opts);
+await click('.cs-pop button[data-v="u-rasmus"]');
+await sleep(300);
+check('choosing a colleague puts them in charge', (await person(freeId)).in_charge_user_id === 'u-rasmus');
+
+// 3b6. Move a column: drag the Due header in front of Type; the order is this member's own (machine and account)
+await evaluate(`document.querySelector('.cs-grid-wrap').scrollLeft = 0`);
+await sleep(100);
+const hdr = async (col) => evaluate(`(() => { const r = document.querySelector('thead th[data-col="${col}"]').getBoundingClientRect(); return [r.left, r.top + r.height / 2, r.width]; })()`);
+const [dx, dy, dw] = await hdr('next_action_due');
+const [tx] = await hdr('types');
+await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: dx + dw / 2, y: dy, button: 'left', clickCount: 1 });
+for (let k = 1; k <= 10; k++) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: dx + dw / 2 + ((tx + 8) - (dx + dw / 2)) * k / 10, y: dy, button: 'left', buttons: 1 });
+await shot('2e-column-drag');
+await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: tx + 8, y: dy, button: 'left', clickCount: 1 });
+await sleep(900);
+const order = await heads();
+check('dragging a header moves the column', order.startsWith('name,in_charge_user_id,next_action_due,types'), order);
+check('and a drag does not sort', (await evaluate(`!document.querySelector('thead th[data-col="next_action_due"] i')`)) === true);
+const mine = JSON.parse(await evaluate(`JSON.stringify((window.__db.crm_user_views.find((r) => r.user_id === 'u-iain') || {}).view || null)`));
+const local = await evaluate(`(() => { try { return JSON.parse(localStorage.getItem('exponential-crm-view-v2:team-fixture:u-iain')).order.slice(0, 4).join(','); } catch (e) { return null; } })()`);
+const theirs = await evaluate(`JSON.stringify(window.__db.crm_user_views.find((r) => r.user_id === 'u-rasmus').view.order)`);
+check("the new order is saved to my account and this machine, and nobody else's view changes", !!mine && mine.order.slice(0, 4).join(',') === 'name,in_charge_user_id,next_action_due,types'
+  && local === 'name,in_charge_user_id,next_action_due,types' && theirs === '["name","notes","types"]', `${mine && mine.order.slice(0, 4)} | ${local} | ${theirs}`);
 
 // 3b. the chat: a conversation that shows what the agent is doing, what it changed (with Undo), and its questions
 check('the chat is visible before anything is sent', (await evaluate(`!!document.querySelector('.cs-overview .cs-chat-log .cs-chat-empty')`)) === true);
@@ -283,6 +334,51 @@ await sleep(200);
 const inv = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('.cs-grid tbody tr')].map((tr) => tr.querySelector('td.k-types').textContent))`));
 check('the type filter narrows the sheet to that type', inv.length > 0 && inv.length < 35 && inv.every((t) => t.includes('Investor')), `${inv.length} rows`);
 await shot('4-type-filter');
+const setType = (v) => evaluate(`(() => { const s = document.querySelector('select.cs-type'); const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; set.call(s, '${v}'); s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+await setType('any');
+await sleep(200);
+
+// archive: right-click a row, Archive; it leaves the sheet and Today, the type filter's Archived lists it, Unarchive brings it back
+const arcId = await evaluate(`document.querySelectorAll('.cs-grid tbody tr')[2].querySelector('td[data-cell]').dataset.cell.split(':')[0]`);
+const arcName = (await person(arcId)).name;
+const rows0 = await evaluate(`document.querySelectorAll('.cs-grid tbody tr').length`);
+const rightClick = (id) => evaluate(`(() => { const td = document.querySelector('td[data-cell="${id}:types"]') || document.querySelector('td[data-cell^="${id}:"]'); td.scrollIntoView({ block: 'nearest' }); const r = td.getBoundingClientRect(); td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 10, button: 2 })); })()`);
+await rightClick(arcId);
+await sleep(200);
+const ctxItems = await evaluate(`[...document.querySelectorAll('.cs-ctx button')].map((b) => b.textContent).join('|')`);
+check('right-click opens the row menu: take, open, archive', /Take|Let go/.test(ctxItems) && /Open the record/.test(ctxItems) && /Archive/.test(ctxItems), ctxItems);
+await shot('4b-row-menu');
+await evaluate(`[...document.querySelectorAll('.cs-ctx button')].find((b) => b.textContent === 'Archive').click()`);
+await sleep(400);
+const arcRow = await person(arcId);
+check('Archive stamps the row and takes it off the sheet', !!arcRow.archived_at && (await evaluate(`document.querySelectorAll('.cs-grid tbody tr').length`)) === rows0 - 1
+  && !(await evaluate(`!!document.querySelector('td[data-cell^="${arcId}:"]')`)), `${rows0} rows before`);
+check('and out of Today', !(await evaluate(`[...document.querySelectorAll('.cs-ov-row b')].some((b) => b.textContent === ${JSON.stringify(arcName)})`)));
+const arcOpt = await evaluate(`[...document.querySelectorAll('select.cs-type option')].find((o) => o.value === 'archived').textContent`);
+check('the type filter counts the archive', arcOpt === 'Archived (2)', arcOpt);
+await setType('archived');
+await sleep(250);
+const arcRows = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('.cs-grid tbody tr')].map((tr) => tr.querySelector('td[data-cell]').dataset.cell.split(':')[0]))`));
+check('Archived in the type filter lists the archived rows only', arcRows.length === 2 && arcRows.includes(arcId), JSON.stringify(arcRows));
+await shot('4c-archived');
+await rightClick(arcId);
+await sleep(200);
+await evaluate(`[...document.querySelectorAll('.cs-ctx button')].find((b) => b.textContent === 'Unarchive').click()`);
+await sleep(400);
+check('Unarchive puts it back', !(await person(arcId)).archived_at && (await evaluate(`document.querySelectorAll('.cs-grid tbody tr').length`)) === 1);
+await setType('any');
+await sleep(200);
+
+// another account sees its own layout: reload as the other member
+await send('Page.navigate', { url: BASE + '?me=u-rasmus' });
+for (let i = 0; i < 60; i++) { if (await evaluate(`document.querySelectorAll('.cs-grid tbody tr').length`) > 0) break; await sleep(250); }
+await sleep(600);
+const theirHeads = await heads();
+check("another account's sheet keeps its own order and columns", theirHeads === 'name,notes,types', theirHeads);
+await send('Page.navigate', { url: BASE });
+for (let i = 0; i < 60; i++) { if (await evaluate(`document.querySelectorAll('.cs-grid tbody tr').length`) > 0) break; await sleep(250); }
+await sleep(600);
+check('and mine is still mine after a reload', (await heads()).startsWith('name,in_charge_user_id,next_action_due,types'), await heads());
 
 // dark
 await send('Page.navigate', { url: BASE + '?dark' });

@@ -19,6 +19,10 @@ export interface SheetPerson {
   source_channel: string; source_at: string; next_action: string | null; next_action_kind?: string | null; next_action_due: string | null;
   last_inbound_at: string | null; last_outbound_at: string | null; do_not_contact: boolean; flags: string[]; merged_into: string | null;
   notes?: string | null; created_at: string; updated_at?: string;
+  /** the team member handling this person, chosen by a person (never by an agent; the database refuses the server) */
+  in_charge_user_id?: string | null;
+  /** set when someone archives the row (right-click); archived rows show only under the type filter's Archived */
+  archived_at?: string | null;
   enrichment?: Record<string, unknown> | null; enrichment_summary?: string | null; enrichment_headline?: string | null;
   enrichment_status?: string | null; enriched_at?: string | null; enrichment_model?: string | null;
   [key: string]: unknown;
@@ -221,7 +225,8 @@ export async function askCrm(message: string, personId: string | null, conversat
 
 /* ── what counts as what, shared by the overview and the sheet's filters ── */
 
-export const isLive = (p: SheetPerson) => !p.merged_into && !p.do_not_contact && !(p.flags ?? []).includes('test')
+export const isArchived = (p: SheetPerson) => !!p.archived_at;
+export const isLive = (p: SheetPerson) => !p.merged_into && !p.do_not_contact && !(p.flags ?? []).includes('test') && !isArchived(p)
   && !['cancelled', 'refunded'].includes(p.customer_stage ?? '');
 const ms = (iso?: string | null) => (iso ? +new Date(iso) : 0);
 /** Wrote to us and nobody has written back yet. */
@@ -242,4 +247,20 @@ export const cameFrom = (p: SheetPerson): string => {
   const how: Record<string, string> = { website_form: 'Hangar form', website_message: 'Message box', preorder_page: 'Pre-order', stripe: 'Pre-order', x_reply: 'X reply', x_dm: 'X DM', email: 'Email', agent_dump: 'Added by the team', manual: 'Added by the team', import_twenty: 'Hangar form' };
   return [how[p.source_channel] ?? 'Other', via && via !== 'Unknown' ? `via ${via}` : ''].filter(Boolean).join(' ');
 };
-export const arrivedWithin = (p: SheetPerson, hours: number) => !p.merged_into && !(p.flags ?? []).includes('test') && Date.now() - ms(p.source_at) < hours * 3_600_000;
+export const arrivedWithin = (p: SheetPerson, hours: number) => !p.merged_into && !(p.flags ?? []).includes('test') && !isArchived(p) && Date.now() - ms(p.source_at) < hours * 3_600_000;
+
+/* ── each member's own sheet view (column order, widths, visible columns) ──
+   One row per member and team in crm_user_views, readable and writable only by that member (RLS), so how one
+   account arranges the sheet never changes anyone else's. The page keeps a copy on the machine too, so it opens in
+   the member's layout at once and still works if the table is unreachable. */
+export async function fetchUserView(teamId: string, me: string, cloud: boolean): Promise<unknown | null> {
+  if (!cloud) return null;
+  const { data, error } = await supabase.from('crm_user_views').select('view').eq('team_id', teamId).eq('user_id', me).maybeSingle();
+  if (error) return null; // not reachable: the machine's copy stands
+  return (data as { view?: unknown } | null)?.view ?? null;
+}
+export async function saveUserView(teamId: string, me: string, view: unknown, cloud: boolean): Promise<void> {
+  if (!cloud) return;
+  const { error } = await supabase.from('crm_user_views').upsert({ user_id: me, team_id: teamId, view, updated_at: new Date().toISOString() });
+  if (error) console.warn('[crm] view not saved to the account:', error.message);
+}
